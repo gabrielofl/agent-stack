@@ -42,10 +42,12 @@ export const api = {
   },
 
   async adminMe() {
-    const res = await fetch(`${this.base()}/admin/me`, {
-      headers: { "authorization": `Bearer ${state.adminToken}` }
-    });
-    if (!res.ok) throw new Error("admin token invalid");
-    return res.json();
-  }
+  const res = await fetch(`${this.base()}/admin/me`, {
+    headers: { "authorization": `Bearer ${state.adminToken}` }
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`admin/me ${res.status}: ${text.slice(0,200)}`);
+  return JSON.parse(text);
+}
+
 };

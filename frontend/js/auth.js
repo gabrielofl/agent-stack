@@ -14,15 +14,20 @@ export const auth = {
   },
 
   openModal() {
-    ui.modalHint.textContent = "";
-    ui.adminPass.value = "";
-    ui.modalBackdrop.hidden = false;
-    ui.adminPass.focus();
-  },
+  ui.modalHint.textContent = "";
+  ui.adminPass.value = "";
+  ui.modalBackdrop.hidden = false;
+  ui.modalBackdrop.style.display = "flex";
+  ui.modalBackdrop.style.pointerEvents = "auto";
+  ui.adminPass.focus();
+},
 
-  closeModal() {
-    ui.modalBackdrop.hidden = true;
-  },
+closeModal() {
+  ui.modalBackdrop.hidden = true;
+  ui.modalBackdrop.style.display = "none";
+  ui.modalBackdrop.style.pointerEvents = "none";
+},
+
 
   async loginWithPassword(password) {
     ui.modalHint.textContent = "Logging in…";
