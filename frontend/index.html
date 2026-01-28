@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AD Intelligence</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    #row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    #screen {
+      width: min(980px, 100%);
+      aspect-ratio: 16/9;
+      border: 1px solid #ddd;
+      object-fit: contain;
+      cursor: crosshair;
+      background: #fafafa;
+    }
+    #side {
+      width: 420px;
+      max-width: 100%;
+    }
+    #log {
+      height: 320px;
+      border: 1px solid #ddd;
+      padding: 8px;
+      overflow: auto;
+      white-space: pre-wrap;
+      background: #fff;
+    }
+    .controls { display: flex; gap: 8px; margin: 8px 0; }
+    input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 8px; }
+    button { padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; background: #fff; cursor: pointer; }
+    button:hover { background: #f3f3f3; }
+    .small { font-size: 12px; color: #666; }
+  </style>
+</head>
+<body>
+  <h2>Agent Viewer</h2>
+
+  <div class="controls">
+    <input id="fqdn" placeholder="Backend FQDN (e.g. xxx.azurecontainerapps.io)" />
+    <button id="save">Save</button>
+  </div>
+
+  <div class="controls">
+    <input id="startUrl" placeholder="Start URL" value="https://example.com" />
+    <button id="start">Start session</button>
+  </div>
+  <div class="small">Tip: Click on the image to click in the remote browser. Use “Send type” to type into the focused element.</div>
+
+  <div id="row">
+    <img id="screen" />
+    <div id="side">
+      <div id="log"></div>
+
+      <div class="controls">
+        <input id="typeText" placeholder="Text to type" />
+        <button id="sendType">Send type</button>
+      </div>
+
+      <div class="controls">
+        <input id="gotoUrl" placeholder="Go to URL" />
+        <button id="sendGoto">Goto</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const el = (id) => document.getElementById(id);
+  const logEl = el("log");
+  const screenEl = el("screen");
+
+  let ws = null;
+  let viewport = { width: 1280, height: 720 };
+  let backendFqdn = localStorage.getItem("backendFqdn") || "";
+
+  el("fqdn").value = backendFqdn;
+
+  function log(msg) {
+    logEl.textContent += msg + "\\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  el("save").onclick = () => {
+    backendFqdn = el("fqdn").value.trim();
+    localStorage.setItem("backendFqdn", backendFqdn);
+    log("Saved backend FQDN: " + backendFqdn);
+  };
+
+  el("start").onclick = async () => {
+    backendFqdn = el("fqdn").value.trim();
+    if (!backendFqdn) return alert("Enter your backend FQDN first.");
+
+    const startUrl = el("startUrl").value.trim() || "https://example.com";
+
+    // Create session
+    const res = await fetch(`https://${backendFqdn}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: startUrl })
+    });
+
+    const data = await res.json();
+    viewport = data.viewport || viewport;
+
+    const wsUrl = `wss://${backendFqdn}${data.wsPath}`;
+    log("WS: " + wsUrl);
+
+    if (ws) ws.close();
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => log("ws open");
+    ws.onclose = () => log("ws closed");
+    ws.onerror = () => log("ws error");
+
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "frame") {
+        screenEl.src = msg.img;
+      } else {
+        log(JSON.stringify(msg));
+      }
+    };
+  };
+
+  // Click mapping: displayed coords -> viewport coords
+  screenEl.addEventListener("click", (e) => {
+    if (!ws || ws.readyState !== 1) return;
+    const rect = screenEl.getBoundingClientRect();
+    const xDisplay = e.clientX - rect.left;
+    const yDisplay = e.clientY - rect.top;
+
+    const x = Math.round((xDisplay / rect.width) * viewport.width);
+    const y = Math.round((yDisplay / rect.height) * viewport.height);
+
+    ws.send(JSON.stringify({ type: "user_click", x, y, button: "left" }));
+    log(`click ${x},${y}`);
+  });
+
+  el("sendType").onclick = () => {
+    if (!ws || ws.readyState !== 1) return;
+    const text = el("typeText").value;
+    ws.send(JSON.stringify({ type: "user_type", text }));
+    log("type: " + text);
+  };
+
+  el("sendGoto").onclick = () => {
+    if (!ws || ws.readyState !== 1) return;
+    const url = el("gotoUrl").value.trim();
+    if (!url) return;
+    ws.send(JSON.stringify({ type: "goto", url }));
+    log("goto: " + url);
+  };
+</script>
+</body>
+</html>
