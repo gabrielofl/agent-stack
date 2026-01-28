@@ -17,33 +17,27 @@
         </div>
       </div>
 
-      <div class="chips">
-        <div class="chip" title="HTTP /health">
-          <span id="dotHealth" class="dot warn"></span>
-          <span>HTTP</span> <b id="healthText">checking…</b>
-        </div>
-        <div class="chip" title="WebSocket state">
-          <span id="dotWs" class="dot warn"></span>
-          <span>WS</span> <b id="wsText">idle</b>
-        </div>
-        <div class="chip" title="Last frame received">
-          <span id="dotFrame" class="dot warn"></span>
-          <span>Last frame</span> <b id="frameText">—</b>
-        </div>
-        <div class="chip" title="FPS estimate">
-          <span class="dot"></span>
-          <span>FPS</span> <b id="fpsText">0</b>
-        </div>
-        <div class="chip" title="Latest error">
-          <span id="dotErr" class="dot"></span>
-          <span>Error</span> <b id="errText">none</b>
-        </div>
+      <div class="top-actions">
+  <div class="dropdown">
+    <button id="statusBtn" class="chip chip-btn" title="Status">
+      <span id="dotStatus" class="dot warn"></span>
+      <span>Status</span>
+    </button>
 
-        <button id="adminBtn" class="chip chip-btn" title="Admin login / logout">
-          <span class="dot" id="dotAdmin"></span>
-          <span id="adminBtnText">Admin</span>
-        </button>
-      </div>
+    <div id="statusMenu" class="dropdown-menu" hidden>
+      <div class="row"><span>HTTP</span><b id="httpLine">—</b></div>
+      <div class="row"><span>WS</span><b id="wsLine">—</b></div>
+      <div class="row"><span>Last frame</span><b id="frameLine">—</b></div>
+      <div class="row"><span>FPS</span><b id="fpsLine">—</b></div>
+      <div class="row"><span>Error</span><b id="errLine">—</b></div>
+    </div>
+  </div>
+
+  <button id="adminBtn" class="chip chip-btn" title="Admin login / logout">
+    <span id="adminBtnText">Login</span>
+  </button>
+</div>
+
     </div>
   </header>
 
@@ -53,37 +47,31 @@
       <section class="card">
         <div class="card-header">
           <div class="card-title">
-            Live Browser Stream
-            <span class="badge" id="sessionBadge">no session</span>
-            <span class="badge badge-admin" id="adminBadge" hidden>admin</span>
-          </div>
-          <div class="actions">
-            <button class="btn ghost" id="btnReconnect">Reconnect WS</button>
-            <button class="btn danger" id="btnStop">Stop</button>
-          </div>
+  Live
+  <span id="sessionDot" class="sess-dot off" title="Session"></span>
+</div>
+
         </div>
 
         <div class="screen-wrap">
-          <img id="screen" class="screen" alt="Waiting for frames…" />
-          <div class="overlay">
-            <div class="pill">Backend: <span class="mono" id="backendHost"></span></div>
-            <div class="pill">URL: <span class="mono" id="pageUrl">—</span></div>
-            <div class="pill">Viewport: <span class="mono" id="vpText">—</span></div>
-            <div class="pill">Click: <span class="mono" id="clickText">—</span></div>
-          </div>
+          <div class="viewer-bar">
+  <div class="pill">URL: <span class="mono" id="pageUrl">—</span></div>
+  <div class="pill">Click: <span class="mono" id="clickText">—</span></div>
+</div>
+
+<img id="screen" class="screen" alt="Waiting for frames…" />
+
         </div>
 
         <div class="content">
           <div class="controls">
             <div class="field">
-              <label>Backend</label>
-              <input id="fqdn" />
-            </div>
-            <div class="field">
               <label>Start URL</label>
               <input id="startUrl" value="https://example.com" />
             </div>
             <button class="btn primary" id="btnStart">Start session</button>
+			<button class="btn ghost" id="btnReconnect">Reconnect</button>
+  <button class="btn danger" id="btnStop">Stop</button>
           </div>
 
           <div class="controls">
@@ -100,9 +88,6 @@
             <button class="btn" id="btnGoto">Go</button>
           </div>
 
-          <p class="hint">
-            User mode shows only essentials. Admin mode reveals full debugging.
-          </p>
         </div>
       </section>
 
@@ -137,10 +122,10 @@
   <!-- Login modal -->
   <div id="modalBackdrop" class="modal-backdrop" hidden>
     <div class="modal">
-      <div class="modal-title">Admin Login</div>
-      <div class="modal-sub">Enter the admin password.</div>
+      <div class="modal-title">Login</div>
+      <div class="modal-sub">Enter the password.</div>
       <div class="modal-field">
-        <input id="adminPass" type="password" placeholder="Admin password" />
+        <input id="adminPass" type="password" placeholder="Password" />
       </div>
       <div class="modal-actions">
         <button class="btn ghost" id="modalCancel">Cancel</button>
