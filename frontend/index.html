@@ -2,314 +2,69 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AD Intelligence • Wiguru Agent </title>
-  <style>
-    :root{
-      --bg:#0b0f1a;
-      --card:#111a2e;
-      --card2:#0f1628;
-      --muted:#aab3c5;
-      --text:#eaf0ff;
-      --line:rgba(255,255,255,.08);
-      --good:#38d996;
-      --warn:#ffcc66;
-      --bad:#ff5c7a;
-      --accent:#fd008e;
-      --accent2:#7a5cff;
-      --shadow: 0 10px 30px rgba(0,0,0,.35);
-      --radius: 16px;
-    }
-    *{box-sizing:border-box}
-    body{
-      margin:0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
-      background: radial-gradient(1200px 600px at 20% 0%, rgba(253,0,142,.15), transparent 60%),
-                  radial-gradient(900px 500px at 90% 10%, rgba(122,92,255,.18), transparent 60%),
-                  var(--bg);
-      color: var(--text);
-    }
-    .topbar{
-      position: sticky; top:0; z-index: 50;
-      border-bottom: 1px solid var(--line);
-      background: rgba(11,15,26,.85);
-      backdrop-filter: blur(10px);
-    }
-    .topbar-inner{
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 14px 18px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 12px;
-    }
-    .brand{
-      display:flex; align-items:center; gap:12px; min-width: 260px;
-    }
-    .logo{
-      width:42px; height:42px;
-      filter: drop-shadow(0 8px 16px rgba(253,0,142,.18));
-      flex:0 0 auto;
-    }
-    .brand h1{
-      margin:0;
-      font-size: 15px;
-      line-height: 1.2;
-      font-weight: 700;
-      letter-spacing: .2px;
-    }
-    .brand .sub{
-      margin: 2px 0 0 0;
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .chips{
-      display:flex; flex-wrap:wrap; gap: 8px; justify-content:flex-end;
-    }
-    .chip{
-      display:flex; align-items:center; gap: 8px;
-      padding: 8px 10px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: rgba(255,255,255,.03);
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .dot{ width:10px; height:10px; border-radius:999px; background: var(--muted); box-shadow: 0 0 0 3px rgba(255,255,255,.04) inset; }
-    .dot.good{ background: var(--good); }
-    .dot.warn{ background: var(--warn); }
-    .dot.bad{  background: var(--bad); }
-    .chip b{ color: var(--text); font-weight: 650; }
-    .container{
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 18px;
-    }
-    .grid{
-      display:grid;
-      grid-template-columns: 1.6fr .9fr;
-      gap: 16px;
-    }
-    @media (max-width: 1020px){
-      .grid{ grid-template-columns: 1fr; }
-      .brand{ min-width: unset; }
-    }
-    .card{
-      background: linear-gradient(180deg, rgba(17,26,46,.95), rgba(15,22,40,.95));
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      overflow:hidden;
-    }
-    .card-header{
-      padding: 14px 14px 10px;
-      border-bottom: 1px solid var(--line);
-      display:flex; align-items:center; justify-content:space-between; gap: 10px;
-    }
-    .card-header .title{
-      font-size: 13px; font-weight: 700; letter-spacing: .2px;
-      color: var(--text);
-      display:flex; align-items:center; gap: 10px;
-    }
-    .badge{
-      font-size: 11px;
-      padding: 4px 8px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      color: var(--muted);
-      background: rgba(255,255,255,.03);
-    }
-    .content{ padding: 14px; }
-
-    .screen-wrap{
-      position:relative;
-      padding: 12px;
-    }
-    .screen{
-      width: 100%;
-      aspect-ratio: 16 / 9;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,.02);
-      object-fit: contain;
-      cursor: crosshair;
-      display:block;
-    }
-    .overlay{
-      position:absolute;
-      left: 22px; top: 22px;
-      display:flex; gap: 8px; flex-wrap:wrap;
-      pointer-events:none;
-    }
-    .pill{
-      padding: 6px 10px;
-      border-radius: 999px;
-      background: rgba(0,0,0,.35);
-      border: 1px solid rgba(255,255,255,.10);
-      color: rgba(255,255,255,.90);
-      font-size: 12px;
-      box-shadow: 0 10px 25px rgba(0,0,0,.25);
-      backdrop-filter: blur(8px);
-    }
-
-    .controls{
-      display:flex; gap: 10px; flex-wrap:wrap;
-      align-items:center;
-    }
-    .field{
-      flex: 1 1 220px;
-      display:flex;
-      gap: 8px;
-      align-items:center;
-      background: rgba(255,255,255,.03);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 10px 10px;
-    }
-    .field label{
-      font-size: 12px;
-      color: var(--muted);
-      min-width: 92px;
-    }
-    input{
-      flex:1;
-      background: transparent;
-      border: none;
-      outline: none;
-      color: var(--text);
-      font-size: 13px;
-      min-width: 120px;
-    }
-    input::placeholder{ color: rgba(170,179,197,.55); }
-
-    .btn{
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,.04);
-      color: var(--text);
-      border-radius: 12px;
-      padding: 10px 12px;
-      font-size: 13px;
-      cursor:pointer;
-      transition: transform .08s ease, background .12s ease, border-color .12s ease;
-      user-select:none;
-    }
-    .btn:hover{ background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.14); }
-    .btn:active{ transform: translateY(1px); }
-    .btn.primary{
-      border-color: rgba(253,0,142,.35);
-      background: linear-gradient(135deg, rgba(253,0,142,.22), rgba(122,92,255,.18));
-    }
-    .btn.danger{
-      border-color: rgba(255,92,122,.35);
-      background: rgba(255,92,122,.10);
-    }
-    .btn.ghost{
-      background: transparent;
-    }
-
-    .log{
-      height: 340px;
-      padding: 12px;
-      background: rgba(0,0,0,.20);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      overflow:auto;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      font-size: 12px;
-      color: rgba(234,240,255,.85);
-      white-space: pre-wrap;
-      line-height: 1.35;
-    }
-    .hint{
-      margin-top: 10px;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.4;
-    }
-    .footer{
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 16px 18px 26px;
-      color: rgba(170,179,197,.75);
-      font-size: 12px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 10px;
-      border-top: 1px solid var(--line);
-    }
-    .footer strong{ color: rgba(234,240,255,.9); }
-    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
-    a{ color: rgba(253,0,142,.9); text-decoration: none; }
-    a:hover{ text-decoration: underline; }
-  </style>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AD Intelligence • Wiguru Agent</title>
+  <link rel="stylesheet" href="./styles/app.css" />
 </head>
-
 <body>
-  <!-- Topbar -->
-  <div class="topbar">
+  <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
-        <!-- Inline logo SVG -->
-        <svg class="logo" viewBox="0 0 800.77 462.57" aria-label="Wiguru logo" role="img">
-          <defs>
-            <style>.cls-1{fill:#fd008e;stroke-width:0}</style>
-          </defs>
-          <g>
-            <path class="cls-1" d="m94.98,442.98c-28.68-13.06-51.68-32.5-69-58.35C8.65,358.79,0,327.69,0,291.35V10.22h162.71v296.46c0,7.39,2.41,13.5,7.24,18.31,4.82,4.83,10.65,7.24,17.46,7.24s12.49-2.41,17.04-7.24c4.54-4.82,6.82-10.93,6.82-18.31v-135.45c0-35.78,8.65-66.58,25.98-92.43,17.32-25.83,40.32-45.43,69-58.78C334.92,6.69,366.02,0,399.53,0s64.6,6.69,93.28,20.02c28.67,13.35,51.67,32.95,69,58.78,17.32,25.85,25.98,56.65,25.98,92.43v135.45c0,7.39,2.41,13.5,7.24,18.31,4.82,4.83,10.65,7.24,17.46,7.24s12.63-2.41,17.46-7.24c4.82-4.82,7.24-10.93,7.24-18.31v-96.01h163.56v80.68c0,36.35-8.81,67.44-26.41,93.28-17.61,25.85-40.76,45.3-69.43,58.35-28.69,13.06-59.5,19.59-92.43,19.59s-63.76-6.54-92.43-19.59c-28.69-13.06-51.83-32.5-69.43-58.35-17.61-25.83-26.41-56.93-26.41-93.28v-135.45c0-7.95-2.42-14.34-7.24-19.17-4.83-4.82-10.65-7.24-17.46-7.24s-12.65,2.43-17.46,7.24c-4.83,4.83-7.24,11.22-7.24,19.17v135.45c0,36.35-8.81,67.44-26.41,93.28-17.61,25.85-40.61,45.3-69,58.35-28.41,13.06-59.08,19.59-92.01,19.59s-63.76-6.54-92.43-19.59Z"/>
-            <path class="cls-1" d="m718.54,14.1h82.23v82.23c0,45.38-36.84,82.23-82.23,82.23h0c-45.38,0-82.23-36.84-82.23-82.23h0c0-45.38,36.84-82.23,82.23-82.23Z" transform="translate(814.87 -622.21) rotate(90)"/>
-          </g>
-        </svg>
-
+        <img class="logo" src="./assets/wiguru-logo.svg" alt="Wiguru" />
         <div>
-          <h1>AD Intelligence Agent</h1>
-          <div class="sub">Powered by <span style="color: var(--accent); font-weight: 700;">Wiguru</span></div>
+          <div class="title">AD Intelligence Agent</div>
+          <div class="subtitle">Powered by <span class="accent">Wiguru</span></div>
         </div>
       </div>
 
       <div class="chips">
-        <div class="chip" title="HTTP /health status">
+        <div class="chip" title="HTTP /health">
           <span id="dotHealth" class="dot warn"></span>
           <span>HTTP</span> <b id="healthText">checking…</b>
         </div>
-        <div class="chip" title="WebSocket connection state">
+        <div class="chip" title="WebSocket state">
           <span id="dotWs" class="dot warn"></span>
           <span>WS</span> <b id="wsText">idle</b>
         </div>
-        <div class="chip" title="Last frame received time">
+        <div class="chip" title="Last frame received">
           <span id="dotFrame" class="dot warn"></span>
           <span>Last frame</span> <b id="frameText">—</b>
         </div>
-        <div class="chip" title="Frames per second estimate">
+        <div class="chip" title="FPS estimate">
           <span class="dot"></span>
           <span>FPS</span> <b id="fpsText">0</b>
         </div>
-        <div class="chip" title="Latest error (if any)">
+        <div class="chip" title="Latest error">
           <span id="dotErr" class="dot"></span>
           <span>Error</span> <b id="errText">none</b>
         </div>
+
+        <button id="adminBtn" class="chip chip-btn" title="Admin login / logout">
+          <span class="dot" id="dotAdmin"></span>
+          <span id="adminBtnText">Admin</span>
+        </button>
       </div>
     </div>
-  </div>
+  </header>
 
-  <div class="container">
-    <div class="grid">
-      <!-- Screen card -->
-      <div class="card">
+  <main class="container">
+    <section class="grid">
+      <!-- Viewer -->
+      <section class="card">
         <div class="card-header">
-          <div class="title">
+          <div class="card-title">
             Live Browser Stream
             <span class="badge" id="sessionBadge">no session</span>
+            <span class="badge badge-admin" id="adminBadge" hidden>admin</span>
           </div>
-          <div class="controls">
-            <button class="btn ghost" id="btnReconnect" title="Reconnect WebSocket without creating a new session">Reconnect WS</button>
-            <button class="btn danger" id="btnStop" title="Stop session (closes WS and forgets session)">Stop</button>
+          <div class="actions">
+            <button class="btn ghost" id="btnReconnect">Reconnect WS</button>
+            <button class="btn danger" id="btnStop">Stop</button>
           </div>
         </div>
 
         <div class="screen-wrap">
-          <img id="screen" class="screen" alt="Waiting for frames..." />
+          <img id="screen" class="screen" alt="Waiting for frames…" />
           <div class="overlay">
             <div class="pill">Backend: <span class="mono" id="backendHost"></span></div>
             <div class="pill">URL: <span class="mono" id="pageUrl">—</span></div>
@@ -320,23 +75,21 @@
 
         <div class="content">
           <div class="controls">
-            <div class="field" style="flex: 1 1 360px;">
+            <div class="field">
               <label>Backend</label>
               <input id="fqdn" />
             </div>
-
-            <div class="field" style="flex: 1 1 360px;">
+            <div class="field">
               <label>Start URL</label>
-              <input id="startUrl" placeholder="https://example.com" value="https://example.com" />
+              <input id="startUrl" value="https://example.com" />
             </div>
-
             <button class="btn primary" id="btnStart">Start session</button>
           </div>
 
-          <div class="controls" style="margin-top:10px;">
+          <div class="controls">
             <div class="field">
               <label>Type</label>
-              <input id="typeText" placeholder="Text to type into the focused element…" />
+              <input id="typeText" placeholder="Text to type…" />
             </div>
             <button class="btn" id="btnType">Send</button>
 
@@ -347,431 +100,62 @@
             <button class="btn" id="btnGoto">Go</button>
           </div>
 
-          <div class="hint">
-            If the screen is blank, check the banner chips: if <b>HTTP</b> is red, backend is down; if <b>WS</b> is red, WebSocket is blocked; if <b>Last frame</b> stays “—”, the backend isn’t sending frames.
-          </div>
+          <p class="hint">
+            User mode shows only essentials. Admin mode reveals full debugging.
+          </p>
         </div>
-      </div>
+      </section>
 
-      <!-- Debug card -->
-      <div class="card">
+      <!-- Admin-only Debug -->
+      <aside class="card" id="adminPanel" hidden>
         <div class="card-header">
-          <div class="title">
-            Debug Console
+          <div class="card-title">
+            Admin Debug
             <span class="badge" id="metricsBadge">frames: 0 • bytes: 0</span>
           </div>
-          <div class="controls">
+          <div class="actions">
             <button class="btn ghost" id="btnCopy">Copy</button>
             <button class="btn ghost" id="btnClear">Clear</button>
           </div>
         </div>
+
         <div class="content">
+          <div class="kv">
+            <div><span>Origin</span><b id="originText"></b></div>
+            <div><span>HTTP</span><b id="httpText"></b></div>
+            <div><span>WS URL</span><b id="wsUrlText" class="mono"></b></div>
+            <div><span>Session</span><b id="sessionIdText" class="mono"></b></div>
+          </div>
+
           <div id="log" class="log"></div>
+          <p class="hint">Console includes HTTP checks, /sessions body on failures, WS reconnect attempts, and JSON parse errors.</p>
         </div>
+      </aside>
+    </section>
+  </main>
+
+  <!-- Login modal -->
+  <div id="modalBackdrop" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-title">Admin Login</div>
+      <div class="modal-sub">Enter the admin password.</div>
+      <div class="modal-field">
+        <input id="adminPass" type="password" placeholder="Admin password" />
       </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="modalCancel">Cancel</button>
+        <button class="btn primary" id="modalLogin">Login</button>
+      </div>
+      <div class="modal-hint" id="modalHint"></div>
     </div>
   </div>
 
-  <div class="footer">
-    <div>© <strong>Wiguru</strong> — Agent</div>
+  <footer class="footer">
+    <div>© <strong>Wiguru</strong> — Agent Viewer</div>
+    <div class="mono">SWA + ACA</div>
+  </footer>
 
-  </div>
-
-<script>
-  // ======= CONFIG =======
-  const DEFAULT_BACKEND_FQDN = "agent-backend.icyhill-20f081d1.westeurope.azurecontainerapps.io";
-  const SWA_ORIGIN = "https://purple-smoke-02e25d403.1.azurestaticapps.net"; // for reference / debugging
-
-  function normalizeFqdn(raw) {
-  let s = (raw || "").trim();
-  // accept inputs like "https://host", "http://host/", "wss://host", "host/path"
-  s = s.replace(/^https?:\/\//i, "");
-  s = s.replace(/^wss?:\/\//i, "");
-  s = s.split("/")[0]; // remove any path
-  return s;
-}
-
-  // ======= ELEMENTS =======
-  const el = (id) => document.getElementById(id);
-  const logEl = el("log");
-  const screenEl = el("screen");
-  const fqdnEl = el("fqdn");
-  const startUrlEl = el("startUrl");
-  const gotoEl = el("gotoUrl");
-  const typeEl = el("typeText");
-
-  const dotHealth = el("dotHealth");
-  const dotWs = el("dotWs");
-  const dotFrame = el("dotFrame");
-  const dotErr = el("dotErr");
-  const healthText = el("healthText");
-  const wsText = el("wsText");
-  const frameText = el("frameText");
-  const fpsText = el("fpsText");
-  const errText = el("errText");
-
-  const backendHost = el("backendHost");
-  const pageUrl = el("pageUrl");
-  const vpText = el("vpText");
-  const clickText = el("clickText");
-  const sessionBadge = el("sessionBadge");
-  const metricsBadge = el("metricsBadge");
-
-  // ======= STATE =======
-  let backendFqdn = normalizeFqdn(localStorage.getItem("backendFqdn") || DEFAULT_BACKEND_FQDN);
-  fqdnEl.value = backendFqdn;
-  let ws = null;
-  let currentSession = null; // { sessionId, wsPath, viewport }
-  let viewport = { width: 1280, height: 720, deviceScaleFactor: 1 };
-
-  let frames = 0;
-  let bytes = 0;
-  let lastFrameAt = 0;
-  let lastFrameUrl = "";
-  let lastError = "";
-  let lastHttp = "";
-  let fpsWindow = []; // timestamps
-  let wsReconnectTimer = null;
-  let wsReconnectAttempt = 0;
-
-  fqdnEl.value = backendFqdn;
-  backendHost.textContent = backendFqdn;
-
-  // ======= LOGGING =======
-  function log(line, level="info"){
-    const ts = new Date().toISOString().replace("T"," ").replace("Z","");
-    const prefix = level === "error" ? "✖" : level === "warn" ? "⚠" : "•";
-    logEl.textContent += `${prefix} [${ts}] ${line}\n`;
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-
-  function setDot(dot, state){
-    dot.classList.remove("good","warn","bad");
-    dot.classList.add(state);
-  }
-
-  function setError(msg){
-    lastError = msg || "";
-    if (!msg){
-      setDot(dotErr, "good");
-      errText.textContent = "none";
-    } else {
-      setDot(dotErr, "bad");
-      errText.textContent = (msg.length > 28) ? msg.slice(0,28) + "…" : msg;
-    }
-  }
-
-  // Capture JS errors to debug "blank screen" issues
-  window.addEventListener("error", (e) => {
-    log(`JS error: ${e.message}`, "error");
-    setError(e.message);
-  });
-  window.addEventListener("unhandledrejection", (e) => {
-    const msg = String(e.reason?.message || e.reason || "unhandled rejection");
-    log(`Promise rejection: ${msg}`, "error");
-    setError(msg);
-  });
-
-  // ======= HEALTH CHECK =======
-  async function checkHealth(){
-    const host = backendFqdn.trim();
-    if (!host) return;
-
-    try {
-      const t0 = performance.now();
-      const res = await fetch(`https://${host}/health`, { cache: "no-store" });
-      const t1 = performance.now();
-      lastHttp = `HTTP ${res.status} (${Math.round(t1-t0)}ms)`;
-      healthText.textContent = res.ok ? `ok (${Math.round(t1-t0)}ms)` : `bad (${res.status})`;
-
-      if (res.ok){
-        setDot(dotHealth, "good");
-      } else {
-        setDot(dotHealth, "bad");
-        setError(`health ${res.status}`);
-      }
-    } catch (e){
-      setDot(dotHealth, "bad");
-      healthText.textContent = "down";
-      setError(`health fetch failed`);
-      log(`Health check failed: ${String(e?.message || e)}`, "warn");
-    }
-  }
-
-  // ======= SESSION + WS =======
-  async function startSession(){
-    backendFqdn = normalizeFqdn(fqdnEl.value);
-    fqdnEl.value = backendFqdn;
-    if (!backendFqdn) return alert("Backend FQDN required");
-    localStorage.setItem("backendFqdn", backendFqdn);
-    backendHost.textContent = backendFqdn;
-
-    setError("");
-    await checkHealth();
-
-    const startUrl = (startUrlEl.value || "https://example.com").trim();
-    log(`Creating session… startUrl=${startUrl}`);
-
-    try {
-      const res = await fetch(`https://${backendFqdn}/sessions`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: startUrl })
-      });
-
-      const text = await res.text();
-      if (!res.ok){
-        log(`POST /sessions failed: HTTP ${res.status}`, "error");
-        setError(`/sessions ${res.status}`);
-        // show body snippet
-        log(`Body: ${text.slice(0, 400)}`, "warn");
-        return;
-      }
-
-      let data;
-      try { data = JSON.parse(text); }
-      catch (e){
-        log(`POST /sessions returned non-JSON. Body: ${text.slice(0,400)}`, "error");
-        setError("sessions non-json");
-        return;
-      }
-
-      currentSession = data;
-      viewport = data.viewport || viewport;
-
-      sessionBadge.textContent = data.sessionId ? `session ${data.sessionId}` : "session created";
-      vpText.textContent = `${viewport.width}×${viewport.height} @dpr${viewport.deviceScaleFactor ?? 1}`;
-
-      log(`Session created: ${data.sessionId}`);
-      connectWs();
-    } catch (e){
-      log(`POST /sessions threw: ${String(e?.message || e)}`, "error");
-      setError("sessions fetch error");
-    }
-  }
-
-  function connectWs(){
-    if (!currentSession?.wsPath){
-      log("No wsPath. Create a session first.", "warn");
-      return;
-    }
-
-    const wsUrl = `wss://${backendFqdn}${currentSession.wsPath}`;
-    log(`WS connecting: ${wsUrl}`);
-
-    // clear any reconnect timer
-    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
-
-    // close existing
-    try { if (ws) ws.close(); } catch {}
-
-    ws = new WebSocket(wsUrl);
-
-    setDot(dotWs, "warn");
-    wsText.textContent = "connecting…";
-
-    ws.onopen = () => {
-      wsReconnectAttempt = 0;
-      setDot(dotWs, "good");
-      wsText.textContent = "open";
-      log("WS open");
-    };
-
-    ws.onclose = () => {
-      setDot(dotWs, "bad");
-      wsText.textContent = "closed";
-      log("WS closed", "warn");
-
-      // Auto-reconnect if session exists
-      scheduleReconnect();
-    };
-
-    ws.onerror = () => {
-      setDot(dotWs, "bad");
-      wsText.textContent = "error";
-      setError("ws error");
-      log("WS error (see browser console/network)", "error");
-    };
-
-    ws.onmessage = (ev) => {
-      bytes += ev.data?.length || 0;
-
-      let msg;
-      try { msg = JSON.parse(ev.data); }
-      catch {
-        log("WS message: non-JSON payload", "warn");
-        return;
-      }
-
-      if (msg.type === "frame"){
-        frames++;
-        lastFrameAt = Date.now();
-        lastFrameUrl = msg.url || lastFrameUrl;
-
-        // fps window (last 5 seconds)
-        fpsWindow.push(lastFrameAt);
-        const cutoff = lastFrameAt - 5000;
-        fpsWindow = fpsWindow.filter(t => t >= cutoff);
-        const fps = (fpsWindow.length / 5).toFixed(1);
-
-        fpsText.textContent = fps;
-        metricsBadge.textContent = `frames: ${frames} • bytes: ${formatBytes(bytes)}`;
-
-        pageUrl.textContent = (msg.url || "—").replace(/^https?:\/\//,"");
-        vpText.textContent = msg.viewport
-          ? `${msg.viewport.width}×${msg.viewport.height} @dpr${msg.viewport.deviceScaleFactor ?? 1}`
-          : `${viewport.width}×${viewport.height} @dpr${viewport.deviceScaleFactor ?? 1}`;
-
-        // update viewport if provided
-        if (msg.viewport) viewport = msg.viewport;
-
-        // set image
-        if (msg.img){
-          screenEl.src = msg.img;
-          setDot(dotFrame, "good");
-          frameText.textContent = new Date(lastFrameAt).toLocaleTimeString();
-          setError("");
-        }
-      } else if (msg.type === "error"){
-        log(`Backend error: ${msg.message}`, "error");
-        setError(msg.message || "backend error");
-      } else {
-        // useful for ack, hello, etc.
-        log(`WS: ${JSON.stringify(msg)}`);
-      }
-    };
-  }
-
-  function scheduleReconnect(){
-    if (!currentSession?.wsPath) return;
-
-    // exponential backoff: 0.8s, 1.6s, 3.2s … max 10s
-    wsReconnectAttempt++;
-    const delay = Math.min(10000, Math.round(800 * Math.pow(2, wsReconnectAttempt - 1)));
-    log(`Reconnecting in ${delay}ms… (attempt ${wsReconnectAttempt})`, "warn");
-
-    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = setTimeout(() => connectWs(), delay);
-  }
-
-  function stopSession(){
-    try { if (ws) ws.close(); } catch {}
-    ws = null;
-    currentSession = null;
-    sessionBadge.textContent = "no session";
-    pageUrl.textContent = "—";
-    vpText.textContent = "—";
-    setDot(dotWs, "warn");
-    wsText.textContent = "idle";
-    log("Stopped session (client-side).");
-  }
-
-  // ======= USER INPUTS =======
-  screenEl.addEventListener("click", (e) => {
-    if (!ws || ws.readyState !== 1) return;
-
-    const rect = screenEl.getBoundingClientRect();
-    const xDisplay = e.clientX - rect.left;
-    const yDisplay = e.clientY - rect.top;
-
-    const x = Math.round((xDisplay / rect.width) * viewport.width);
-    const y = Math.round((yDisplay / rect.height) * viewport.height);
-
-    clickText.textContent = `${x},${y}`;
-    ws.send(JSON.stringify({ type: "user_click", x, y, button: "left" }));
-  });
-
-  function sendWs(obj){
-    if (!ws || ws.readyState !== 1){
-      log("WS not open. Start session or reconnect.", "warn");
-      return false;
-    }
-    ws.send(JSON.stringify(obj));
-    return true;
-  }
-
-  function sendType(){
-    const text = typeEl.value || "";
-    if (!text) return;
-    if (sendWs({ type: "user_type", text })) log(`type: ${text}`);
-  }
-
-  function sendGoto(){
-    const url = (gotoEl.value || "").trim();
-    if (!url) return;
-    if (sendWs({ type: "goto", url })) log(`goto: ${url}`);
-  }
-
-  // ======= UI EVENTS =======
-  el("btnStart").onclick = startSession;
-  el("btnReconnect").onclick = () => {
-    if (!currentSession?.wsPath){
-      log("No session to reconnect. Start session first.", "warn");
-      return;
-    }
-    connectWs();
-  };
-  el("btnStop").onclick = stopSession;
-  el("btnType").onclick = sendType;
-  el("btnGoto").onclick = sendGoto;
-
-  el("btnClear").onclick = () => { logEl.textContent = ""; setError(""); };
-  el("btnCopy").onclick = async () => {
-    const payload = [
-      `backend=${backendFqdn}`,
-      `session=${currentSession?.sessionId || "none"}`,
-      `http=${lastHttp || "unknown"}`,
-      `ws=${ws ? ws.readyState : "none"}`,
-      `frames=${frames}`,
-      `lastFrameAt=${lastFrameAt ? new Date(lastFrameAt).toISOString() : "none"}`,
-      `lastUrl=${lastFrameUrl || "none"}`,
-      "",
-      "---- log ----",
-      logEl.textContent
-    ].join("\n");
-    try {
-      await navigator.clipboard.writeText(payload);
-      log("Copied debug bundle to clipboard.");
-    } catch {
-      log("Clipboard copy blocked by browser.", "warn");
-    }
-  };
-
-  // Enter-to-send convenience
-  typeEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendType(); });
-  gotoEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendGoto(); });
-
-  // ======= WATCHDOGS =======
-  // Health check every 10s
-  setInterval(checkHealth, 10000);
-  // Frame watchdog every 2s
-  setInterval(() => {
-    if (!ws || ws.readyState !== 1) return;
-    if (!lastFrameAt){
-      setDot(dotFrame, "warn");
-      frameText.textContent = "—";
-      return;
-    }
-    const delta = Date.now() - lastFrameAt;
-    if (delta > 6000){
-      setDot(dotFrame, "bad");
-      frameText.textContent = `${Math.round(delta/1000)}s ago`;
-      log(`No frames for ${Math.round(delta/1000)}s (WS open). Backend stream may be stuck.`, "warn");
-      setError("no frames");
-    }
-  }, 2000);
-
-  // Initial bootstrap
-  setError("");
-  checkHealth();
-  log(`Viewer loaded. SWA origin=${location.origin}`);
-  log(`Configured backend=${backendFqdn}`);
-  log(`If blank: open DevTools → Console & Network → look for CORS or WS errors.`);
-  function formatBytes(n){
-    const u = ["B","KB","MB","GB"]; let i=0; let x=n;
-    while (x>=1024 && i<u.length-1){ x/=1024; i++; }
-    return `${x.toFixed(i?1:0)}${u[i]}`;
-  }
-</script>
+  <!-- Modular JS (no bundler) -->
+  <script type="module" src="./js/main.js"></script>
 </body>
 </html>
