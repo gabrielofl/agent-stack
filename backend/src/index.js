@@ -5,7 +5,19 @@ import { chromium } from "playwright";
 import cors from "cors";
 
 const app = express();
-app.use(cors({ origin: true })); // MVP: allow all origins (tighten later)
+
+const ALLOWED_ORIGINS = new Set([
+  "https://purple-smoke-02e25d403.1.azurestaticapps.net",
+]);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // allow same-origin / server-to-server / curl (no Origin header)
+    if (!origin) return cb(null, true);
+    return cb(null, ALLOWED_ORIGINS.has(origin));
+  }
+}));
+
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", (req, res) => res.json({ ok: true }));
