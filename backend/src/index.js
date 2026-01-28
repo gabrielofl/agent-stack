@@ -11,27 +11,6 @@ const ALLOWED_ORIGINS = new Set([
   "https://purple-smoke-02e25d403.1.azurestaticapps.net",
 ]);
 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || crypto.randomBytes(24).toString("hex");
-
-function requireAdmin(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  if (!token || token !== ADMIN_TOKEN) return res.status(401).json({ error: "unauthorized" });
-  next();
-}
-
-app.post("/admin/login", (req, res) => {
-  const { password } = req.body || {};
-  if (!ADMIN_PASSWORD) return res.status(500).json({ error: "ADMIN_PASSWORD not set" });
-  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "invalid_password" });
-  res.json({ token: ADMIN_TOKEN });
-});
-
-app.get("/admin/me", requireAdmin, (req, res) => {
-  res.json({ ok: true, role: "admin" });
-});
-
 app.use(cors({
   origin: (origin, cb) => {
     // allow same-origin / server-to-server / curl (no Origin header)
@@ -109,6 +88,28 @@ app.post("/sessions", async (req, res) => {
     viewport,
   });
 });
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || crypto.randomBytes(24).toString("hex");
+
+function requireAdmin(req, res, next) {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || token !== ADMIN_TOKEN) return res.status(401).json({ error: "unauthorized" });
+  next();
+}
+
+app.post("/admin/login", (req, res) => {
+  const { password } = req.body || {};
+  if (!ADMIN_PASSWORD) return res.status(500).json({ error: "ADMIN_PASSWORD not set" });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "invalid_password" });
+  res.json({ token: ADMIN_TOKEN });
+});
+
+app.get("/admin/me", requireAdmin, (req, res) => {
+  res.json({ ok: true, role: "admin" });
+});
+
 
 const server = http.createServer(app);
 

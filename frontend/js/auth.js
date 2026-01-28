@@ -1,12 +1,15 @@
+// auth.js
 import { state } from "./state.js";
 import { ui } from "./ui.js";
 import { api } from "./api.js";
 
 export const auth = {
   init() {
-    // If token exists, try to validate and enable admin
+    // restore token
+    state.adminToken = localStorage.getItem("adminToken") || "";
     if (state.adminToken) {
-      this.validate().catch(() => this.logout());
+      // verify token silently
+      this.verify().catch(() => this.logout());
     }
   },
 
@@ -22,31 +25,38 @@ export const auth = {
   },
 
   async loginWithPassword(password) {
-    ui.modalHint.textContent = "";
+    ui.modalHint.textContent = "Logging in…";
     try {
-      const data = await api.adminLogin(password);
-      state.adminToken = data.token;
-      localStorage.setItem("adminToken", state.adminToken);
+      const { token } = await api.adminLogin((password || "").trim());
+
+      // IMPORTANT: save it
+      state.adminToken = token;
+      localStorage.setItem("adminToken", token);
+
+      // OPTIONAL but recommended: verify /admin/me so you can show a real error
+      await this.verify();
+
       ui.setAdminMode(true);
-      ui.log("Admin login success.");
+      ui.modalHint.textContent = "";
       this.closeModal();
+      ui.log("Admin login ok.");
     } catch (e) {
-      ui.modalHint.textContent = "Login failed. Check password.";
-      ui.log(`Admin login failed: ${String(e.message || e)}`, "warn");
+      ui.setAdminMode(false);
+      ui.modalHint.textContent = (e?.message || "Login failed");
+      ui.log(`Admin login failed: ${String(e?.message || e)}`, "warn");
     }
   },
 
-  async validate() {
-    if (!state.adminToken) return;
-    await api.adminMe(); // throws if invalid
-    ui.setAdminMode(true);
-    ui.log("Admin token validated.");
+  async verify() {
+    // Will throw if not ok
+    await api.adminMe();
   },
 
   logout() {
     state.adminToken = "";
     localStorage.removeItem("adminToken");
     ui.setAdminMode(false);
-    ui.log("Logged out of admin.");
+    ui.modalHint.textContent = "";
+    ui.log("Admin logout.");
   }
 };
