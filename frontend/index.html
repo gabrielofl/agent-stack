@@ -382,6 +382,15 @@
   const DEFAULT_BACKEND_FQDN = "agent-backend.icyhill-20f081d1.westeurope.azurecontainerapps.io";
   const SWA_ORIGIN = "https://purple-smoke-02e25d403.1.azurestaticapps.net"; // for reference / debugging
 
+  function normalizeFqdn(raw) {
+  let s = (raw || "").trim();
+  // accept inputs like "https://host", "http://host/", "wss://host", "host/path"
+  s = s.replace(/^https?:\/\//i, "");
+  s = s.replace(/^wss?:\/\//i, "");
+  s = s.split("/")[0]; // remove any path
+  return s;
+}
+
   // ======= ELEMENTS =======
   const el = (id) => document.getElementById(id);
   const logEl = el("log");
@@ -409,7 +418,8 @@
   const metricsBadge = el("metricsBadge");
 
   // ======= STATE =======
-  let backendFqdn = localStorage.getItem("backendFqdn") || DEFAULT_BACKEND_FQDN;
+  let backendFqdn = normalizeFqdn(localStorage.getItem("backendFqdn") || DEFAULT_BACKEND_FQDN);
+  fqdnEl.value = backendFqdn;
   let ws = null;
   let currentSession = null; // { sessionId, wsPath, viewport }
   let viewport = { width: 1280, height: 720, deviceScaleFactor: 1 };
@@ -490,7 +500,8 @@
 
   // ======= SESSION + WS =======
   async function startSession(){
-    backendFqdn = fqdnEl.value.trim();
+    backendFqdn = normalizeFqdn(fqdnEl.value);
+    fqdnEl.value = backendFqdn;
     if (!backendFqdn) return alert("Backend FQDN required");
     localStorage.setItem("backendFqdn", backendFqdn);
     backendHost.textContent = backendFqdn;
