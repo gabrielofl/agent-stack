@@ -5,72 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Wiguru AD Intelligence</title>
   <link rel="stylesheet" href="./styles/app.css" />
-
-  <!-- Minimal layout helpers (no redesign of your theme; just fixes spacing + makes typing prominent) -->
-  <style>
-    /* Keep panel content behaving like a chat app */
-    .tab-pane.chat-pane {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      height: 100%;
-      min-height: 0;
-    }
-    .chat-log {
-      flex: 1;
-      min-height: 0;
-      overflow: auto;
-    }
-    .composer {
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      gap: 10px;
-      align-items: end;
-    }
-    .composer textarea {
-      width: 100%;
-      resize: none;
-      min-height: 56px;
-      max-height: 140px;
-      padding: 12px 14px;
-      font-size: 16px;
-      line-height: 1.25;
-      border-radius: 14px;
-    }
-    .composer .btn {
-      height: 56px;
-      border-radius: 14px;
-      padding: 0 16px;
-      white-space: nowrap;
-    }
-    .quick-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .qa {
-      cursor: pointer;
-      user-select: none;
-    }
-
-    /* Agent panel under screen */
-    .agent-panel {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid rgba(255,255,255,0.08);
-    }
-    .agent-row {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-    .agent-feed {
-      max-height: 220px;
-      overflow: auto;
-    }
-  </style>
 </head>
 
 <body>
@@ -192,11 +126,11 @@
 
             <!-- Suggested actions (feel like chat, not separate controls) -->
             <div class="quick-actions">
-              <span class="chip qa" data-insert="/start https://example.com">/start</span>
-              <span class="chip qa" data-insert="/reconnect">/reconnect</span>
-              <span class="chip qa" data-insert="/stop">/stop</span>
-              <span class="chip qa" data-insert="/goto https://">/goto</span>
-              <span class="chip qa" data-insert="/type "> /type</span>
+              <span class="chip qa" data-insert="/start https://example.com">start</span>
+              <span class="chip qa" data-insert="/reconnect">reconnect</span>
+              <span class="chip qa" data-insert="/stop">stop</span>
+              <span class="chip qa" data-insert="/goto https://">goto</span>
+              <span class="chip qa" data-insert="/type "> type</span>
             </div>
 
             <!-- Prominent typing area -->
@@ -206,7 +140,7 @@
               ></textarea>
 
               <!-- Voice placeholder: wire later -->
-              <button class="btn ghost icon-btn" id="btnVoice" title="Voice (wire later)" aria-label="Voice">
+              <button class="btn ghost icon-btn" id="btnVoice" title="Voice" aria-label="Voice">
   <svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
        xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v4a3 3 0 0 0 3 3Z"
@@ -225,10 +159,6 @@
                 Send
               </button>
             </div>
-
-            <p class="hint" style="margin-top:-2px;">
-              Voice button is a placeholder — later you can wire to Web Speech API / Whisper / push-to-talk.
-            </p>
 
             <!-- LEGACY controls kept hidden so your current main.js doesn't break.
                  You can gradually migrate logic to chatInput parsing and remove these later. -->
@@ -293,8 +223,8 @@
   </div>
 
   <footer class="footer">
-    <div>© <strong>Wiguru</strong></div>
-  </footer>
+  <div class="footer-inner">© <strong>Wiguru</strong></div>
+</footer>
 
   <!-- Tiny inline helper: chip inserts text into chat input (safe + optional) -->
   <script>
