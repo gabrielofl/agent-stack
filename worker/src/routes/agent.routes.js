@@ -101,14 +101,27 @@ agentRouter.post("/agent/observe", async (req, res) => {
     }
 
     // Push proposed action in the format your frontend expects:
-    push(sessionId, {
-      type: "agent_proposed_action",
-      sessionId,
-      stepId,
-      action: decision.action,
-      explanation: decision.explanation || "",
-      ts: Date.now(),
-    });
+push(sessionId, {
+  type: "agent_proposed_action",
+  sessionId,
+  stepId,
+  action: decision.action,
+  explanation: decision.explanation || "",
+  ts: Date.now(),
+});
+
+// ✅ If the action is "ask_user", pause the agent so observe doesn't re-trigger decideNextAction
+if (decision?.action?.type === "ask_user") {
+  sess.setIdle(); // or sess.setAwaitingUser() if you have it
+  push(sessionId, {
+    type: "agent_event",
+    sessionId,
+    status: "idle",
+    message: "Waiting for user input…",
+    ts: Date.now(),
+  });
+}
+
 
     // Only ask for approval if required (policy)
     if (decision.requiresApproval) {

@@ -76,11 +76,46 @@ async function postAdminJson(path, body) {
   }
 }
 
+function logLlmStatusToAdminConsole(s) {
+  if (!s) {
+    ui.systemLog("[LLM] No llmStatus returned from /agent/start", "warn");
+    return;
+  }
+
+  const healthOk = s.health?.ok ?? s.ok;
+  const chatOk = s.chat?.ok ?? s.ok;
+
+  const healthMs = s.health?.latencyMs ?? "?";
+  const chatMs = s.chat?.latencyMs ?? "?";
+  const base = s.llamaBaseUrl ?? "";
+
+  if (healthOk && chatOk) {
+    ui.systemLog(`✅ LLM READY | health=${healthMs}ms chat=${chatMs}ms | ${base}`, "ok");
+    // Optional: also show it in the user feed
+    // ui.pushUserFeed(`System: ✅ LLM ready (${chatMs}ms)`, "ok");
+    return;
+  }
+
+  if (healthOk && !chatOk) {
+    const err = s.chat?.error ?? s.error ?? "unknown";
+    ui.systemLog(`⚠️ LLM UP but not responsive | ${err} | ${base}`, "warn");
+    return;
+  }
+
+  const err = s.health?.error ?? s.error ?? "unknown";
+  ui.systemLog(`❌ LLM DOWN | ${err} | ${base}`, "error");
+}
+
+
 // Start agent stream in IDLE mode (backend: POST /agent/start; worker will “wait for instructions”)
 // Start agent stream in IDLE mode (backend: POST /agent/start)
 async function startAgentIdle(sessionId) {
-  // Use the official API method you already have
-  return api.startAgent(sessionId, "default");
+	// Use the official API method you already have
+	const out = await api.startAgent(sessionId, "default");
+
+// ✅ log once to admin console
+logLlmStatusToAdminConsole(out?.llmStatus);
+  return;
 }
 
 // Send instruction (backend: POST /agent/instruction; worker begins running)

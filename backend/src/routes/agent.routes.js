@@ -14,23 +14,38 @@ export const agentRouter = Router();
 // backend: src/routes/agent.routes.js (ESM)
 agentRouter.post("/agent/start", requireAdmin, async (req, res) => {
   const { sessionId, model } = req.body || {};
-  if (!sessionId || !sessions.has(sessionId)) return res.status(400).json({ error: "bad sessionId" });
+  if (!sessionId || !sessions.has(sessionId)) {
+    return res.status(400).json({ error: "bad sessionId" });
+  }
 
   const sess = sessions.get(sessionId);
 
-  // ensure worker WS is up
+  // ensure worker WS is up (ok if this fails)
   try { await ensureWorkerStream(sessionId); } catch {}
 
-  // create/ensure worker agent session (IDLE)
+  // 1) create/ensure worker agent session (IDLE)
   const r = await fetchFn(`${WORKER_HTTP}/agent/start`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ sessionId, model: model || "default" }),
   });
-  const out = await r.text();
-  if (!r.ok) return res.status(500).json({ error: "worker start failed", detail: out.slice(0, 200) });
 
-  // mark backend agent as idle
+  const out = await r.text();
+  if (!r.ok) {
+    return res.status(500).json({ error: "worker start failed", detail: out.slice(0, 200) });
+  }
+
+  // 2) probe LLM health ONCE (after worker start)
+  let llmStatus;
+  try {
+    const rr = await fetchFn(`${WORKER_HTTP}/health/llm`, { method: "GET" });
+    const json = await rr.json().catch(async () => ({ raw: await rr.text() }));
+    llmStatus = { ok: rr.ok, status: rr.status, ...json };
+  } catch (e) {
+    llmStatus = { ok: false, status: 0, error: "llm_probe_failed", detail: String(e?.message || e) };
+  }
+
+  // 3) mark backend agent as idle
   sess.agent = {
     running: false,
     goal: "",
@@ -39,7 +54,12 @@ agentRouter.post("/agent/start", requireAdmin, async (req, res) => {
     pendingApprovals: new Map(),
   };
 
-  res.json({ ok: true, status: "idle" });
+  // ✅ RETURN IT so frontend can log it once
+  return res.json({
+    ok: true,
+    status: "idle",
+    llmStatus, // ✅
+  });
 });
 
 
