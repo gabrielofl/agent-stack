@@ -21,5 +21,9 @@ export const state = {
   lastElements: [],
   lastProposedAt: 0,
   lastExecutedAt: 0,
+  
+  pendingStepId: "",
+  pendingAction: null,
+  lastQuestion: "",
 
 };

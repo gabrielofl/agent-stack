@@ -5,7 +5,74 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Wiguru AD Intelligence</title>
   <link rel="stylesheet" href="./styles/app.css" />
+
+  <!-- Minimal layout helpers (no redesign of your theme; just fixes spacing + makes typing prominent) -->
+  <style>
+    /* Keep panel content behaving like a chat app */
+    .tab-pane.chat-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      height: 100%;
+      min-height: 0;
+    }
+    .chat-log {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+    }
+    .composer {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .composer textarea {
+      width: 100%;
+      resize: none;
+      min-height: 56px;
+      max-height: 140px;
+      padding: 12px 14px;
+      font-size: 16px;
+      line-height: 1.25;
+      border-radius: 14px;
+    }
+    .composer .btn {
+      height: 56px;
+      border-radius: 14px;
+      padding: 0 16px;
+      white-space: nowrap;
+    }
+    .quick-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .qa {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    /* Agent panel under screen */
+    .agent-panel {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .agent-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .agent-feed {
+      max-height: 220px;
+      overflow: auto;
+    }
+  </style>
 </head>
+
 <body>
   <header class="topbar">
     <div class="topbar-inner">
@@ -18,106 +85,185 @@
       </div>
 
       <div class="top-actions">
-  <div class="dropdown">
-    <button id="statusBtn" class="chip chip-btn" title="Status">
-      <span id="dotStatus" class="dot warn"></span>
-      <span>Status</span>
-    </button>
+        <div class="dropdown">
+          <button id="statusBtn" class="chip chip-btn" title="Status">
+            <span id="dotStatus" class="dot warn"></span>
+            <span>Status</span>
+          </button>
 
-    <div id="statusMenu" class="dropdown-menu" hidden>
-      <div class="row"><span>HTTP</span><b id="httpLine">—</b></div>
-      <div class="row"><span>WS</span><b id="wsLine">—</b></div>
-      <div class="row"><span>Last frame</span><b id="frameLine">—</b></div>
-      <div class="row"><span>FPS</span><b id="fpsLine">—</b></div>
-      <div class="row"><span>Error</span><b id="errLine">—</b></div>
-    </div>
-  </div>
+          <div id="statusMenu" class="dropdown-menu" hidden>
+            <div class="row"><span>HTTP</span><b id="httpLine">—</b></div>
+            <div class="row"><span>WS</span><b id="wsLine">—</b></div>
+            <div class="row"><span>Last frame</span><b id="frameLine">—</b></div>
+            <div class="row"><span>FPS</span><b id="fpsLine">—</b></div>
+            <div class="row"><span>Error</span><b id="errLine">—</b></div>
+          </div>
+        </div>
 
-  <button id="adminBtn" class="chip chip-btn" title="Admin login / logout">
-    <span id="adminBtnText">Login</span>
-  </button>
-</div>
-
+        <button id="adminBtn" class="chip chip-btn" title="Admin login / logout">
+          <span id="adminBtnText">Login</span>
+        </button>
+      </div>
     </div>
   </header>
 
   <main class="container">
     <section class="grid">
-      <!-- Viewer -->
+
+      <!-- LEFT: Viewer + Agent follow-up BELOW screen -->
       <section class="card">
         <div class="card-header">
           <div class="card-title">
-  Live
-  <span id="sessionDot" class="sess-dot off" title="Session"></span>
-</div>
-
+            Live
+            <span id="sessionDot" class="sess-dot off" title="Session"></span>
+          </div>
         </div>
 
         <div class="screen-wrap">
           <div class="viewer-bar">
-  <div class="pill">URL: <span class="mono" id="pageUrl">—</span></div>
-  <div class="pill">Click: <span class="mono" id="clickText">—</span></div>
-</div>
-
-<div class="screen-layer">
-  <img id="screen" class="screen" />
-  <canvas id="overlay" class="overlay"></canvas>
-</div>
-
-
-        </div>
-
-        <div class="content">
-          <div class="controls">
-            <div class="field">
-              <label>Start URL</label>
-              <input id="startUrl" value="https://example.com" />
-            </div>
-            <button class="btn primary" id="btnStart">Start session</button>
-			<button class="btn ghost" id="btnReconnect">Reconnect</button>
-  <button class="btn danger" id="btnStop">Stop</button>
+            <div class="pill">URL: <span class="mono" id="pageUrl">—</span></div>
+            <div class="pill">Click: <span class="mono" id="clickText">—</span></div>
           </div>
 
-          <div class="controls">
-            <div class="field">
-              <label>Type</label>
-              <input id="typeText" placeholder="Text to type…" />
-            </div>
-            <button class="btn" id="btnType">Send</button>
-
-            <div class="field">
-              <label>Goto</label>
-              <input id="gotoUrl" placeholder="https://…" />
-            </div>
-            <button class="btn" id="btnGoto">Go</button>
+          <div class="screen-layer">
+            <img id="screen" class="screen" />
+            <canvas id="overlay" class="overlay"></canvas>
           </div>
-
         </div>
+
+        <!-- Agent follow-up section stays under screen (NO TAB) -->
+        <div class="content agent-panel">
+  <!-- Collapsed header row (always visible) -->
+  <div class="agent-head" id="agentHead" role="button" tabindex="0" aria-expanded="false">
+    <div class="agent-row" style="margin:0;">
+      <div class="pill">Agent: <b id="agentState">—</b></div>
+      <div class="pill">Step: <b id="agentStep">—</b></div>
+      <div class="pill">Last: <b id="agentLast" class="mono">—</b></div>
+    </div>
+
+    <button class="btn ghost agent-toggle" id="agentToggleBtn" aria-label="Expand agent panel" title="Expand">
+      <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+           xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Expanded content (hidden by default) -->
+  <div class="agent-body" id="agentBody" hidden>
+    <div class="agent-row">
+      <button class="btn" id="btnApprove" disabled>Approve pending</button>
+      <button class="btn ghost" id="btnAsk" disabled>Answer question…</button>
+    </div>
+
+    <div>
+      <div class="card-subtitle" style="margin:0 0 8px 0;">Agent feed</div>
+      <div id="agentFeed" class="log agent-feed"></div>
+    </div>
+  </div>
+</div>
+
       </section>
 
-      <!-- Admin-only Debug -->
-      <aside class="card" id="adminPanel" hidden>
+      <!-- RIGHT: Panel (Tabs only USER / ADMIN) -->
+      <aside class="card" id="sidePanel">
         <div class="card-header">
           <div class="card-title">
-            Admin Debug
+            Panel
             <span class="badge" id="metricsBadge">frames: 0 • bytes: 0</span>
           </div>
-          <div class="actions">
-            <button class="btn ghost" id="btnCopy">Copy</button>
-            <button class="btn ghost" id="btnClear">Clear</button>
+
+          <div class="actions tabs">
+            <button class="btn ghost tab-btn active" id="tabUserBtn" data-tab="user">User</button>
+            <button class="btn ghost tab-btn" id="tabAdminBtn" data-tab="admin" hidden>Admin</button>
           </div>
         </div>
 
-        <div class="content">
-          <div class="kv">
-            <div><span>Origin</span><b id="originText"></b></div>
-            <div><span>HTTP</span><b id="httpText"></b></div>
-            <div><span>WS URL</span><b id="wsUrlText" class="mono"></b></div>
-            <div><span>Session</span><b id="sessionIdText" class="mono"></b></div>
-          </div>
+        <div class="content" style="height:100%; min-height:0;">
+          <!-- USER TAB -->
+          <section id="tab-user" class="tab-pane chat-pane">
+            <div>
+              <div class="card-subtitle" style="margin-top:2px;">Chat</div>
+            </div>
 
-          <div id="log" class="log"></div>
-          <p class="hint">Console includes HTTP checks, /sessions body on failures, WS reconnect attempts, and JSON parse errors.</p>
+            <!-- Scrollable chat log -->
+            <div id="userLog" class="log chat-log"></div>
+
+            <!-- Suggested actions (feel like chat, not separate controls) -->
+            <div class="quick-actions">
+              <span class="chip qa" data-insert="/start https://example.com">/start</span>
+              <span class="chip qa" data-insert="/reconnect">/reconnect</span>
+              <span class="chip qa" data-insert="/stop">/stop</span>
+              <span class="chip qa" data-insert="/goto https://">/goto</span>
+              <span class="chip qa" data-insert="/type "> /type</span>
+            </div>
+
+            <!-- Prominent typing area -->
+            <div class="composer">
+              <textarea
+                id="chatInput"
+              ></textarea>
+
+              <!-- Voice placeholder: wire later -->
+              <button class="btn ghost icon-btn" id="btnVoice" title="Voice (wire later)" aria-label="Voice">
+  <svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
+       xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v4a3 3 0 0 0 3 3Z"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M19 11a7 7 0 0 1-14 0"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M12 18v3"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M8 21h8"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</button>
+
+
+              <button class="btn primary" id="chatSend" aria-label="Send">
+                Send
+              </button>
+            </div>
+
+            <p class="hint" style="margin-top:-2px;">
+              Voice button is a placeholder — later you can wire to Web Speech API / Whisper / push-to-talk.
+            </p>
+
+            <!-- LEGACY controls kept hidden so your current main.js doesn't break.
+                 You can gradually migrate logic to chatInput parsing and remove these later. -->
+            <div id="legacyControls" hidden>
+              <input id="startUrl" value="https://example.com" />
+              <button id="btnStart">Start session</button>
+
+              <button id="btnReconnect">Reconnect</button>
+              <button id="btnStop">Stop</button>
+
+              <input id="typeText" placeholder="Text to type…" />
+              <button id="btnType">Send</button>
+
+              <input id="gotoUrl" placeholder="https://…" />
+              <button id="btnGoto">Go</button>
+            </div>
+          </section>
+
+          <!-- ADMIN TAB -->
+          <section id="tab-admin" class="tab-pane" hidden>
+            <div class="kv">
+              <div><span>Origin</span><b id="originText"></b></div>
+              <div><span>HTTP</span><b id="httpText"></b></div>
+              <div><span>WS URL</span><b id="wsUrlText" class="mono"></b></div>
+              <div><span>Session</span><b id="sessionIdText" class="mono"></b></div>
+            </div>
+
+            <div class="row" style="display:flex; gap:10px; flex-wrap:wrap; margin:10px 0;">
+              <button class="btn ghost" id="btnCopy">Copy</button>
+              <button class="btn ghost" id="btnClear">Clear</button>
+            </div>
+
+            <div id="adminLog" class="log"></div>
+            <p class="hint">Admin-only debug log (health checks, WS reconnects, raw events).</p>
+          </section>
         </div>
       </aside>
     </section>
@@ -143,7 +289,62 @@
     <div>© <strong>Wiguru</strong></div>
   </footer>
 
-  <!-- Modular JS (no bundler) -->
+  <!-- Tiny inline helper: chip inserts text into chat input (safe + optional) -->
+  <script>
+    (function () {
+      function insertIntoChat(txt) {
+        const el = document.getElementById('chatInput');
+        if (!el) return;
+        el.value = (el.value ? (el.value + ' ') : '') + txt;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+
+      document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLElement)) return;
+        if (t.classList.contains('qa') && t.dataset.insert) insertIntoChat(t.dataset.insert);
+      });
+    })();
+  </script>
+
+  <script>
+  (function () {
+    const head = document.getElementById("agentHead");
+    const body = document.getElementById("agentBody");
+    const btn = document.getElementById("agentToggleBtn");
+    if (!head || !body || !btn) return;
+
+    function setExpanded(expanded) {
+      body.hidden = !expanded;
+      head.setAttribute("aria-expanded", String(expanded));
+      btn.title = expanded ? "Collapse" : "Expand";
+      btn.setAttribute("aria-label", expanded ? "Collapse agent panel" : "Expand agent panel");
+      btn.style.transform = expanded ? "rotate(180deg)" : "rotate(0deg)";
+      btn.style.transition = "transform 150ms ease";
+    }
+
+    // default collapsed
+    setExpanded(false);
+
+    head.addEventListener("click", (e) => {
+      // If they click the button or pills, just toggle
+      const expanded = head.getAttribute("aria-expanded") === "true";
+      setExpanded(!expanded);
+    });
+
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        const expanded = head.getAttribute("aria-expanded") === "true";
+        setExpanded(!expanded);
+      }
+    });
+  })();
+</script>
+
+
+  <!-- Your modular JS -->
   <script type="module" src="./js/main.js"></script>
 </body>
 </html>

@@ -62,7 +62,22 @@ export const api = {
   const text = await res.text();
   if (!res.ok) throw new Error(`agent/start ${res.status}: ${text.slice(0,200)}`);
   return JSON.parse(text);
-},
+	},
+  
+  async correction(sessionId, text, mode = "override") {
+  const res = await fetch(`${this.base()}/agent/correction`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${state.adminToken}`,
+    },
+    body: JSON.stringify({ sessionId, text, mode }),
+  });
+  const out = await res.text();
+  if (!res.ok) throw new Error(`agent/correction ${res.status}: ${out.slice(0,200)}`);
+  return JSON.parse(out);
+}
+
 
 
 };
