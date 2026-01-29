@@ -50,7 +50,7 @@ export const api = {
   return JSON.parse(text);
   },
   
-  async startAgent(sessionId, model = "default") {
+async startAgent(sessionId, model = "default") {
   const res = await fetch(`${this.base()}/agent/start`, {
     method: "POST",
     headers: {

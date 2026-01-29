@@ -21,15 +21,14 @@ export function createApp() {
     maxAge: 86400,
   };
 
-  // ✅ CORS headers on all requests
+  // CORS headers on all routes
   app.use(cors(corsOptions));
 
-  // ✅ Preflight handler for all routes (prevents 405 on OPTIONS)
+  // Preflight for all routes
   app.options("*", cors(corsOptions));
 
   app.use(express.json({ limit: "2mb" }));
 
-  // Routes
   app.use(healthRouter);
   app.use(adminRouter);
   app.use(workerRouter);

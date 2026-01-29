@@ -77,13 +77,10 @@ async function postAdminJson(path, body) {
 }
 
 // Start agent stream in IDLE mode (backend: POST /agent/start; worker will “wait for instructions”)
+// Start agent stream in IDLE mode (backend: POST /agent/start)
 async function startAgentIdle(sessionId) {
-  // If you later add api.startAgentIdle(), we’ll use it automatically.
-  if (typeof api.startAgentIdle === "function") {
-    return api.startAgentIdle(sessionId, "default");
-  }
-  // Otherwise call backend directly:
-  return postAdminJson("/agent/start", { sessionId, model: "default" });
+  // Use the official API method you already have
+  return api.startAgent(sessionId, "default");
 }
 
 // Send instruction (backend: POST /agent/instruction; worker begins running)
