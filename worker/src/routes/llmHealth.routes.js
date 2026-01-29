@@ -1,98 +1,182 @@
 import { Router } from "express";
-import { fetchFn } from "../services/fetch.js"; // adjust path if needed
+import { fetchFn } from "../services/fetch.js";
 import { LLAMA_BASE_URL } from "../config/env.js";
 
 export const llmHealthRouter = Router();
 
-// small helper
-function msSince(t0) {
-  return Math.round(performance.now() - t0);
+const baseNow = () => (globalThis.performance?.now ? performance.now() : Date.now());
+const msSince = (t0) => Math.round((globalThis.performance?.now ? performance.now() : Date.now()) - t0);
+
+async function safeText(r) {
+  try { return await r.text(); } catch { return ""; }
 }
 
-// Node 20 has global performance; if not, fallback
-const now = () => (globalThis.performance?.now ? performance.now() : Date.now());
+function levelFrom(result) {
+  // Down if llama /health fails
+  if (!result.health.ok) return "down";
+  // Degraded if models or chat fail
+  if (!result.models.ok) return "degraded";
+  if (!result.chat.ok) return "degraded";
+  // Ready if everything ok
+  return "ready";
+}
 
 llmHealthRouter.get("/health/llm", async (req, res) => {
-  // If llama is local-in-container, this should be http://127.0.0.1:8080
   const base = LLAMA_BASE_URL || "http://127.0.0.1:8080";
+
+  // thresholds to help you see "slow but working"
+  const CHAT_SLOW_MS = 4000;
+  const CHAT_TIMEOUT_MS = 8000;
+  const MODELS_TIMEOUT_MS = 2000;
+  const HEALTH_TIMEOUT_MS = 1500;
 
   const result = {
     ok: false,
+    level: "down",              // down | degraded | ready
+    summary: "",
     llamaBaseUrl: base,
-    health: { ok: false, latencyMs: null, error: null },
-    chat: { ok: false, latencyMs: null, error: null },
+    health: { ok: false, status: 0, latencyMs: null, error: null },
+    models: { ok: false, status: 0, latencyMs: null, error: null, count: null },
+    chat: {
+      ok: false,
+      status: 0,
+      latencyMs: null,
+      error: null,
+      slow: false,
+      sample: null,
+      parsed: false,
+    },
     ts: Date.now(),
   };
 
-  // 1) /health probe
-  try {
-    const t0 = now();
-    const r = await fetchFn(`${base}/health`, { method: "GET" });
-    const latency = msSince(t0);
+  // helper: GET with timeout
+  async function getWithTimeout(url, timeoutMs) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    const t0 = baseNow();
+    try {
+      const r = await fetchFn(url, { method: "GET", signal: controller.signal, headers: { "cache-control": "no-cache" } });
+      return { r, latencyMs: msSince(t0), aborted: false };
+    } finally {
+      clearTimeout(t);
+    }
+  }
 
-    result.health.latencyMs = latency;
+  // helper: POST with timeout
+  async function postWithTimeout(url, body, timeoutMs) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    const t0 = baseNow();
+    try {
+      const r = await fetchFn(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "cache-control": "no-cache" },
+        signal: controller.signal,
+        body: JSON.stringify(body),
+      });
+      return { r, latencyMs: msSince(t0), aborted: false };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // 1) llama /health
+  try {
+    const { r, latencyMs } = await getWithTimeout(`${base}/health`, HEALTH_TIMEOUT_MS);
+    result.health.status = r.status;
+    result.health.latencyMs = latencyMs;
 
     if (!r.ok) {
       result.health.error = `HTTP ${r.status}`;
+      result.level = levelFrom(result);
+      result.summary = "llama /health failed";
       return res.status(200).json(result);
     }
 
     result.health.ok = true;
   } catch (e) {
-    result.health.error = String(e?.message || e);
+    result.health.error = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
+    result.level = levelFrom(result);
+    result.summary = "llama /health unreachable";
     return res.status(200).json(result);
   }
 
-  // 2) /v1/chat/completions probe (responsiveness)
-  // keep it tiny: minimal tokens, short ctx, deterministic
+  // 2) /v1/models (quick deterministic OpenAI-surface check)
   try {
-    const t0 = now();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000); // health timeout separate from LLM_TIMEOUT_MS
+    const { r, latencyMs } = await getWithTimeout(`${base}/v1/models`, MODELS_TIMEOUT_MS);
+    result.models.status = r.status;
+    result.models.latencyMs = latencyMs;
 
-    const r = await fetchFn(`${base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
+    const text = await safeText(r);
+    if (!r.ok) {
+      result.models.error = `HTTP ${r.status}: ${text.slice(0, 120)}`;
+    } else {
+      result.models.ok = true;
+      try {
+        const json = JSON.parse(text);
+        const arr = Array.isArray(json?.data) ? json.data : null;
+        result.models.count = arr ? arr.length : null;
+      } catch {
+        // models ok but unparsable — still ok enough
+      }
+    }
+  } catch (e) {
+    result.models.error = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
+  }
+
+  // 3) /v1/chat/completions (responsiveness)
+  try {
+    const { r, latencyMs } = await postWithTimeout(
+      `${base}/v1/chat/completions`,
+      {
         model: "local",
         temperature: 0,
-        max_tokens: 8,
-        messages: [{ role: "user", content: "Reply with: OK" }],
-      }),
-    });
+        max_tokens: 16,
+        messages: [
+          // Align more with your real usage (optional)
+          { role: "system", content: "You are a healthcheck. Reply with a short answer." },
+          { role: "user", content: "ping" },
+        ],
+      },
+      CHAT_TIMEOUT_MS
+    );
 
-    clearTimeout(timeout);
+    result.chat.status = r.status;
+    result.chat.latencyMs = latencyMs;
+    result.chat.slow = latencyMs >= CHAT_SLOW_MS;
 
-    const latency = msSince(t0);
-    result.chat.latencyMs = latency;
-
-    const text = await r.text();
+    const text = await safeText(r);
     if (!r.ok) {
       result.chat.error = `HTTP ${r.status}: ${text.slice(0, 120)}`;
-      return res.status(200).json(result);
-    }
+    } else {
+      // We consider it responsive if HTTP 200, even if the model doesn't follow instructions
+      result.chat.ok = true;
 
-    // Parse minimally; don’t hard-fail if parsing changes.
-    let content = "";
-    try {
-      const json = JSON.parse(text);
-      content = json?.choices?.[0]?.message?.content || "";
-    } catch {
-      content = text.slice(0, 120);
+      // Try to parse sample for debugging/UI
+      try {
+        const json = JSON.parse(text);
+        const content = json?.choices?.[0]?.message?.content ?? "";
+        result.chat.sample = String(content).slice(0, 80) || null;
+        result.chat.parsed = true;
+      } catch {
+        result.chat.sample = text.slice(0, 80) || null;
+      }
     }
-
-    // Accept “OK” presence as a basic sanity check
-    result.chat.ok = /ok/i.test(content);
-    if (!result.chat.ok) {
-      result.chat.error = `Unexpected response: ${String(content).slice(0, 80)}`;
-      return res.status(200).json(result);
-    }
-
-    result.ok = true;
-    return res.status(200).json(result);
   } catch (e) {
-    result.chat.error = String(e?.name === "AbortError" ? "timeout" : e?.message || e);
-    return res.status(200).json(result);
+    result.chat.error = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
   }
+
+  // Final classification
+  result.level = levelFrom(result);
+  result.ok = result.level === "ready";
+
+  if (result.level === "ready") {
+    result.summary = result.chat.slow ? "LLM ready (slow)" : "LLM ready";
+  } else if (result.level === "degraded") {
+    result.summary = "LLM degraded (server up, API partially failing)";
+  } else {
+    result.summary = "LLM down";
+  }
+
+  return res.status(200).json(result);
 });

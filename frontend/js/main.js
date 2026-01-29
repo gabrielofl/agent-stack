@@ -82,30 +82,27 @@ function logLlmStatusToAdminConsole(s) {
     return;
   }
 
-  const healthOk = s.health?.ok ?? s.ok;
-  const chatOk = s.chat?.ok ?? s.ok;
-
+  const level = s.level || (s.ok ? "ready" : "degraded");
+  const base = s.llamaBaseUrl ?? "";
   const healthMs = s.health?.latencyMs ?? "?";
   const chatMs = s.chat?.latencyMs ?? "?";
-  const base = s.llamaBaseUrl ?? "";
+  const summary = s.summary ?? "";
 
-  if (healthOk && chatOk) {
-    ui.systemLog(`✅ LLM READY | health=${healthMs}ms chat=${chatMs}ms | ${base}`, "ok");
-    // Optional: also show it in the user feed
-    // ui.pushUserFeed(`System: ✅ LLM ready (${chatMs}ms)`, "ok");
+  if (level === "ready") {
+    const slowTag = s.chat?.slow ? " (slow)" : "";
+    ui.systemLog(`✅ LLM READY${slowTag} | health=${healthMs}ms chat=${chatMs}ms | ${summary} | ${base}`, "ok");
     return;
   }
 
-  if (healthOk && !chatOk) {
-    const err = s.chat?.error ?? s.error ?? "unknown";
-    ui.systemLog(`⚠️ LLM UP but not responsive | ${err} | ${base}`, "warn");
+  if (level === "degraded") {
+    const err = s.chat?.error || s.models?.error || s.health?.error || s.error || "unknown";
+    ui.systemLog(`⚠️ LLM DEGRADED | ${summary} | err=${err} | base=${base}`, "warn");
     return;
   }
 
-  const err = s.health?.error ?? s.error ?? "unknown";
-  ui.systemLog(`❌ LLM DOWN | ${err} | ${base}`, "error");
+  const err = s.health?.error || s.error || "unknown";
+  ui.systemLog(`❌ LLM DOWN | ${summary} | err=${err} | base=${base}`, "error");
 }
-
 
 // Start agent stream in IDLE mode (backend: POST /agent/start; worker will “wait for instructions”)
 // Start agent stream in IDLE mode (backend: POST /agent/start)

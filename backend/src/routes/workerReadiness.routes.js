@@ -9,10 +9,14 @@ async function probe(url, opts = {}) {
   try {
     const r = await fetchFn(url, { method: "GET", ...opts });
     const text = await r.text().catch(() => "");
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch {}
+
     return {
       ok: r.ok,
       status: r.status,
       latencyMs: Date.now() - t0,
+      json,
       detail: text ? text.slice(0, 200) : null,
     };
   } catch (e) {
@@ -20,6 +24,7 @@ async function probe(url, opts = {}) {
       ok: false,
       status: 0,
       latencyMs: Date.now() - t0,
+      json: null,
       detail: String(e?.message || e),
     };
   }
