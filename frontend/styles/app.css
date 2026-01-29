@@ -471,3 +471,7 @@ footer.footer {
 footer.footer > div {
   width: 100%;
 }
+
+.mask-pass {
+  -webkit-text-security: disc; /* masks characters like a password field */
+}
