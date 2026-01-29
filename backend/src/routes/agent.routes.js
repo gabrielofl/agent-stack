@@ -11,6 +11,7 @@ export const agentRouter = Router();
 
 // ---- Agent control ----
 // src/routes/agent.routes.js
+// backend: src/routes/agent.routes.js (ESM)
 agentRouter.post("/agent/start", requireAdmin, async (req, res) => {
   const { sessionId, model } = req.body || {};
   if (!sessionId || !sessions.has(sessionId)) return res.status(400).json({ error: "bad sessionId" });
@@ -20,7 +21,16 @@ agentRouter.post("/agent/start", requireAdmin, async (req, res) => {
   // ensure worker WS is up
   try { await ensureWorkerStream(sessionId); } catch {}
 
-  // mark agent as idle (waiting)
+  // create/ensure worker agent session (IDLE)
+  const r = await fetchFn(`${WORKER_HTTP}/agent/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId, model: model || "default" }),
+  });
+  const out = await r.text();
+  if (!r.ok) return res.status(500).json({ error: "worker start failed", detail: out.slice(0, 200) });
+
+  // mark backend agent as idle
   sess.agent = {
     running: false,
     goal: "",
@@ -29,9 +39,11 @@ agentRouter.post("/agent/start", requireAdmin, async (req, res) => {
     pendingApprovals: new Map(),
   };
 
-  // IMPORTANT: do NOT call worker /agent/start yet (no goal)
   res.json({ ok: true, status: "idle" });
 });
+
+
+// backend: src/routes/agent.routes.js (ESM)
 
 agentRouter.post("/agent/instruction", requireAdmin, async (req, res) => {
   const { sessionId, text, model } = req.body || {};
@@ -40,10 +52,8 @@ agentRouter.post("/agent/instruction", requireAdmin, async (req, res) => {
 
   const sess = sessions.get(sessionId);
 
-  // make sure stream is connected
   try { await ensureWorkerStream(sessionId); } catch {}
 
-  // set "running"
   sess.agent = sess.agent || { pendingApprovals: new Map() };
   sess.agent.running = true;
   sess.agent.goal = String(text).trim();
@@ -51,15 +61,15 @@ agentRouter.post("/agent/instruction", requireAdmin, async (req, res) => {
   sess.agent.lastObsAt = 0;
   if (!sess.agent.pendingApprovals) sess.agent.pendingApprovals = new Map();
 
-  // start the worker with this instruction as goal
-  const r = await fetchFn(`${WORKER_HTTP}/agent/start`, {
+  // ✅ call worker instruction endpoint
+  const r = await fetchFn(`${WORKER_HTTP}/agent/instruction`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId, goal: sess.agent.goal, model: sess.agent.model }),
+    body: JSON.stringify({ sessionId, text: sess.agent.goal }),
   });
 
   const out = await r.text();
-  if (!r.ok) return res.status(500).json({ error: "worker start failed", detail: out.slice(0, 200) });
+  if (!r.ok) return res.status(500).json({ error: "worker instruction failed", detail: out.slice(0, 200) });
 
   res.json({ ok: true, status: "running" });
 });

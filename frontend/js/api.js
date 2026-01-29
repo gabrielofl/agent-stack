@@ -76,8 +76,20 @@ export const api = {
   const out = await res.text();
   if (!res.ok) throw new Error(`agent/correction ${res.status}: ${out.slice(0,200)}`);
   return JSON.parse(out);
+},
+
+async instruction(sessionId, text, model = "default") {
+  const res = await fetch(`${this.base()}/agent/instruction`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${state.adminToken}`,
+    },
+    body: JSON.stringify({ sessionId, text, model }),
+  });
+  const out = await res.text();
+  if (!res.ok) throw new Error(`agent/instruction ${res.status}: ${out.slice(0, 200)}`);
+  return JSON.parse(out);
 }
-
-
 
 };

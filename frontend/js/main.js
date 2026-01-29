@@ -38,11 +38,63 @@ function recomputeOverall() {
   ui.updateStatusMenu();
 }
 
-// -------------------- Chat command surface --------------------
+// -------------------- Small helpers --------------------
 function echoUser(text) {
   ui.pushUserFeed(`You: ${text}`);
 }
 
+function joinUrl(base, path) {
+  const b = String(base || "").replace(/\/+$/, "");
+  const p = String(path || "").replace(/^\/+/, "");
+  return `${b}/${p}`;
+}
+
+async function postAdminJson(path, body) {
+  if (!state.isAdmin || !state.adminToken) {
+    throw new Error("admin required (login first)");
+  }
+
+  const url = joinUrl(state.backendFqdn, path);
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      // your backend requireAdmin typically uses Bearer token
+      authorization: `Bearer ${state.adminToken}`,
+    },
+    body: JSON.stringify(body || {}),
+  });
+
+  const text = await r.text();
+  if (!r.ok) throw new Error(`${path} ${r.status}: ${text.slice(0, 200)}`);
+
+  // tolerate empty responses
+  try {
+    return text ? JSON.parse(text) : { ok: true };
+  } catch {
+    return { ok: true, raw: text };
+  }
+}
+
+// Start agent stream in IDLE mode (backend: POST /agent/start; worker will “wait for instructions”)
+async function startAgentIdle(sessionId) {
+  // If you later add api.startAgentIdle(), we’ll use it automatically.
+  if (typeof api.startAgentIdle === "function") {
+    return api.startAgentIdle(sessionId, "default");
+  }
+  // Otherwise call backend directly:
+  return postAdminJson("/agent/start", { sessionId, model: "default" });
+}
+
+// Send instruction (backend: POST /agent/instruction; worker begins running)
+async function sendAgentInstruction(sessionId, text) {
+  if (typeof api.instruction === "function") {
+    return api.instruction(sessionId, text, "default");
+  }
+  return postAdminJson("/agent/instruction", { sessionId, text, model: "default" });
+}
+
+// -------------------- Chat command surface --------------------
 function parseArgs(s) {
   // keeps quoted groups: /type "hello world"
   const out = [];
@@ -52,6 +104,20 @@ function parseArgs(s) {
   return out;
 }
 
+async function resetRuntimeStateAfterSessionStart() {
+  ui.setSessionActive(false);
+  state.frames = 0;
+  state.bytes = 0;
+  state.lastFrameAt = 0;
+  state.lastFrameUrl = "";
+  state.pendingStepId = "";
+  state.pendingAction = null;
+  state.lastQuestion = "";
+  state.lastProposedAction = null;
+  state.lastExecutedAction = null;
+  state.lastElements = [];
+}
+
 async function handleStart(url) {
   const startUrl = (url || "https://example.com").trim();
   echoUser(`/start ${startUrl}`);
@@ -59,34 +125,24 @@ async function handleStart(url) {
   try {
     state.session = await api.createSession(startUrl);
 
-    // reset runtime state
-    ui.setSessionActive(false);
-    state.frames = 0;
-    state.bytes = 0;
-    state.lastFrameAt = 0;
-    state.lastFrameUrl = "";
-    state.pendingStepId = "";
-    state.pendingAction = null;
-    state.lastQuestion = "";
-    state.lastProposedAction = null;
-    state.lastExecutedAction = null;
-    state.lastElements = [];
+    await resetRuntimeStateAfterSessionStart();
 
     if (ui.sessionIdText) ui.sessionIdText.textContent = state.session.sessionId || "";
 
     wsClient.connect(recomputeOverall);
 
-    // admin-only agent autostart (system-level -> admin log)
+    // ✅ Desired behavior: start agent stream in IDLE, waiting for chat instructions
     if (state.isAdmin && state.adminToken) {
-      ui.systemLog("Auto-starting agent (admin)…");
-      const goal = `Analyze this page and move toward the AD Intelligence goal (MVP).`;
-      await api.startAgent(state.session.sessionId, goal, "default");
-      ui.systemLog("Agent started.");
+      ui.systemLog("Starting agent stream (idle)…");
+      await startAgentIdle(state.session.sessionId);
+      ui.systemLog("Agent is idle and waiting for chat instructions.");
+      ui.pushUserFeed("System: Agent ready. Type a request in chat to start it.");
     } else {
-      ui.systemLog("Agent autostart skipped (not admin).", "warn");
+      ui.systemLog("Agent not started (admin not logged in).", "warn");
+      ui.pushUserFeed("System: Login as admin to send agent instructions.", "warn");
     }
   } catch (e) {
-    ui.systemLog(`Start session failed — ${String(e.message || e)}`, "error");
+    ui.systemLog(`Start session failed — ${String(e?.message || e)}`, "error");
     ui.setError("sessions failed");
     recomputeOverall();
   }
@@ -123,15 +179,15 @@ function handleGoto(url) {
   wsClient.send({ type: "goto", url: u });
 }
 
+// Manual typing into page (kept via /type)
 function handleType(text) {
   const t = (text || "");
   if (!t) return;
-  // requirement: user chat must display all sent from textbox
   echoUser(t);
   wsClient.send({ type: "user_type", text: t });
 }
 
-// Optional extra commands
+// Optional extra commands (manual control)
 function handleClick(x, y) {
   const xi = Number(x),
     yi = Number(y);
@@ -155,6 +211,34 @@ function handleKey(key) {
   wsClient.send({ type: "user_press_key", key: k });
 }
 
+// ✅ This is the key change:
+// after a session exists, plain chat text => agent instruction (NOT user_type)
+async function handleInstruction(text) {
+  const t = String(text || "").trim();
+  if (!t) return;
+
+  // requirement: show everything the user typed in chat
+  echoUser(t);
+
+  if (!state.session?.sessionId) {
+    ui.pushUserFeed("System: start a session first with /start …", "warn");
+    return;
+  }
+
+  if (!state.isAdmin || !state.adminToken) {
+    ui.pushUserFeed("System: admin login required to send agent instructions.", "warn");
+    return;
+  }
+
+  try {
+    ui.systemLog(`Sending instruction → worker: ${t}`);
+    await sendAgentInstruction(state.session.sessionId, t);
+    ui.pushUserFeed("System: instruction sent to agent.");
+  } catch (e) {
+    ui.pushUserFeed(`System: instruction failed — ${String(e?.message || e)}`, "error");
+  }
+}
+
 async function dispatchChatCommand(raw) {
   const line = (raw || "").trim();
   if (!line) return;
@@ -174,6 +258,8 @@ async function dispatchChatCommand(raw) {
         return handleStop();
       case "/goto":
         return handleGoto(args[0]);
+
+      // manual page control stays explicit
       case "/type":
         return handleType(args.join(" "));
       case "/click":
@@ -182,14 +268,15 @@ async function dispatchChatCommand(raw) {
         return handleScroll(args[0], args[1]);
       case "/key":
         return handleKey(args.join(" "));
+
       default:
-        // unknown command -> treat as text typed
-        return handleType(line);
+        // unknown slash command: treat it as an instruction (still matches your “everything in chat” feel)
+        return handleInstruction(line);
     }
   }
 
-  // plain text => user_type
-  return handleType(line);
+  // ✅ plain text => instruction (once session exists)
+  return handleInstruction(line);
 }
 
 // Wire chat box + send button
@@ -230,7 +317,7 @@ async function checkHealth() {
     state.lastHealthOk = false;
     state.lastHttp = "HTTP down";
     ui.setError("health fetch failed");
-    ui.systemLog(`Health check failed: ${String(e.message || e)}`, "warn");
+    ui.systemLog(`Health check failed: ${String(e?.message || e)}`, "warn");
   } finally {
     recomputeOverall();
   }
@@ -397,9 +484,7 @@ ui.adminPass.addEventListener("keydown", (e) => {
 });
 
 // -------------------- Boot --------------------
-// Debug/system -> admin log only
 ui.systemLog(`Viewer loaded. origin=${location.origin}`);
 ui.systemLog(`Backend=${state.backendFqdn}`);
-
-// User-friendly tip (not a debug event)
 ui.pushUserFeed(`Tip: type /start https://example.com to begin.`);
+ui.pushUserFeed(`Tip: after /start, plain chat text becomes an agent instruction. Use /type to type into the page.`);

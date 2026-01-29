@@ -11,10 +11,7 @@ export function scheduleWorkerReconnect(sessionId) {
 
   if (sess.workerReconnectTimer) return; // already scheduled
 
-  sess.workerBackoffMs = Math.min(
-    Math.max(sess.workerBackoffMs || 500, 500) * 2,
-    8000
-  );
+  sess.workerBackoffMs = Math.min(Math.max(sess.workerBackoffMs || 500, 500) * 2, 8000);
 
   sess.workerReconnectTimer = setTimeout(async () => {
     sess.workerReconnectTimer = null;
@@ -24,6 +21,40 @@ export function scheduleWorkerReconnect(sessionId) {
       // ensureWorkerStream will reschedule on failure
     }
   }, sess.workerBackoffMs);
+}
+
+function ensureAgentStruct(sess) {
+  if (!sess.agent) {
+    sess.agent = {
+      running: false,
+      goal: "",
+      model: "default",
+      lastObsAt: 0,
+      pendingApprovals: new Map(),
+    };
+  }
+  if (!sess.agent.pendingApprovals) sess.agent.pendingApprovals = new Map();
+  return sess.agent;
+}
+
+async function postActionResult({ sessionId, stepId, ok, error, note, data }) {
+  try {
+    await fetchFn(`${WORKER_HTTP}/agent/action_result`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        stepId,
+        ok: !!ok,
+        error: error || null,
+        note: note || null,
+        data: data ?? null,
+        ts: Date.now(),
+      }),
+    });
+  } catch {
+    // best-effort
+  }
 }
 
 export async function ensureWorkerStream(sessionId) {
@@ -55,16 +86,38 @@ export async function ensureWorkerStream(sessionId) {
     ws.on("open", () => {
       sess.workerBackoffMs = 500; // reset backoff on success
       cleanupConnecting();
+
+      broadcastToViewers(sess, {
+        type: "agent_event",
+        sessionId,
+        status: "worker_ws_open",
+        ts: Date.now(),
+      });
     });
 
     ws.on("close", () => {
       cleanupConnecting();
       scheduleWorkerReconnect(sessionId);
+
+      broadcastToViewers(sess, {
+        type: "agent_event",
+        sessionId,
+        status: "worker_ws_closed",
+        ts: Date.now(),
+      });
     });
 
-    ws.on("error", () => {
+    ws.on("error", (err) => {
       cleanupConnecting();
       scheduleWorkerReconnect(sessionId);
+
+      broadcastToViewers(sess, {
+        type: "agent_event",
+        sessionId,
+        status: "worker_ws_error",
+        error: String(err?.message || err),
+        ts: Date.now(),
+      });
     });
 
     // Keepalive ping (some proxies kill idle WS)
@@ -87,148 +140,143 @@ export async function ensureWorkerStream(sessionId) {
         return;
       }
 
-      // forward non-sensitive worker events to viewers for debugging/UX
-      if (
-        msg.type === "log" ||
-        msg.type === "agent_event" ||
-        msg.type === "status" ||
-        msg.type === "agent_status" ||
-        msg.type === "agent_error"
-      ) {
+      const t = msg?.type;
+
+      // ---- 1) Forward worker events/logs to viewers (safe) ----
+      // NOTE: worker may emit "agent_event" for idle/running/done, errors, etc.
+      if (t === "log" || t === "agent_event" || t === "status" || t === "agent_status" || t === "agent_error") {
         broadcastToViewers(sess, { type: "agent_event", ...msg });
+
+        // If worker declared done in an event, mark backend as idle too
+        if (t === "agent_event" && msg?.status === "done") {
+          const agent = ensureAgentStruct(sess);
+          agent.running = false;
+          agent.goal = "";
+        }
         return;
-	  }
-		if (msg.type === "agent_done") {
-  // mark idle
-  if (sess.agent) {
-    sess.agent.running = false;
-    sess.agent.goal = "";
-  }
+      }
 
-  broadcastToViewers(sess, {
-    type: "agent_event",
-    sessionId,
-    status: "done",
-    message: msg.message || "Done. Waiting for next instruction.",
-    ts: Date.now(),
-  });
+      // Optional compatibility: some older worker builds might emit this
+      if (t === "agent_done") {
+        const agent = ensureAgentStruct(sess);
+        agent.running = false;
+        agent.goal = "";
 
-  return;
-}
+        broadcastToViewers(sess, {
+          type: "agent_event",
+          sessionId,
+          status: "done",
+          message: msg.message || "Done. Waiting for next instruction.",
+          ts: Date.now(),
+        });
+        return;
+      }
 
-      if (msg.type === "propose_action") {
-        // forward proposed action to frontend viewers
-        broadcastToViewers(sess, { type: "agent_proposed_action", ...msg });
+      // ---- 2) Normalize propose messages (support old + new) ----
+      const isPropose = t === "propose_action" || t === "agent_proposed_action";
 
-        // If requires approval, store it and stop here
-        if (msg.requiresApproval) {
-          if (!sess.agent) {
-            sess.agent = {
-              running: false,
-              goal: "",
-              model: "default",
-              lastObsAt: 0,
-              pendingApprovals: new Map(),
-            };
-          }
-          if (!sess.agent.pendingApprovals) sess.agent.pendingApprovals = new Map();
-          sess.agent.pendingApprovals.set(msg.stepId, msg.action);
+      if (!isPropose) return;
 
+      const agent = ensureAgentStruct(sess);
+
+      const stepId = String(msg.stepId || msg.stepID || msg.step || "");
+      const action = msg.action || null;
+      const requiresApproval = !!msg.requiresApproval;
+
+      // Forward proposed action to frontend in a consistent format
+      broadcastToViewers(sess, {
+        type: "agent_proposed_action",
+        sessionId,
+        stepId,
+        action,
+        explanation: msg.explanation || "",
+        requiresApproval,
+        ts: Date.now(),
+      });
+
+      // ---- 3) Store approvals if required ----
+      if (requiresApproval) {
+        agent.pendingApprovals.set(stepId, action);
+
+        broadcastToViewers(sess, {
+          type: "agent_action_needs_approval",
+          sessionId,
+          stepId,
+          ts: Date.now(),
+        });
+
+        // Do not execute
+        return;
+      }
+
+      // ---- 4) ask_user should never execute ----
+      if (action?.type === "ask_user") {
+        broadcastToViewers(sess, {
+          type: "agent_question",
+          sessionId,
+          stepId,
+          question: action.question || "",
+          ts: Date.now(),
+        });
+
+        await postActionResult({
+          sessionId,
+          stepId,
+          ok: true,
+          note: "ask_user forwarded to viewer",
+        });
+
+        return;
+      }
+
+      // ---- 5) Execute immediately (autonomous actions) ----
+      try {
+        const execRes = await executeAgentAction(sess, action);
+
+        broadcastToViewers(sess, {
+          type: "agent_executed_action",
+          sessionId,
+          stepId,
+          action,
+          ts: Date.now(),
+        });
+
+        // If screenshot_region produced an image, forward it to viewers
+        if (execRes?.data?.type === "screenshot_region") {
           broadcastToViewers(sess, {
-            type: "agent_action_needs_approval",
+            type: "agent_screenshot_region",
             sessionId,
-            stepId: msg.stepId,
+            stepId,
+            ...execRes.data,
             ts: Date.now(),
           });
-          return;
         }
 
-        // ask_user action: forward to viewer and DO NOT execute
-        if (msg.action?.type === "ask_user") {
-          broadcastToViewers(sess, {
-            type: "agent_question",
-            sessionId,
-            stepId: msg.stepId,
-            question: msg.action.question || "",
-            ts: Date.now(),
-          });
+        await postActionResult({
+          sessionId,
+          stepId,
+          ok: true,
+          data: execRes?.data || null,
+        });
+      } catch (e) {
+        const err = String(e?.message || e);
 
-          // optional: tell worker you didn't execute anything
-          await fetchFn(`${WORKER_HTTP}/agent/action_result`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              sessionId,
-              stepId: msg.stepId,
-              ok: true,
-              note: "ask_user forwarded to viewer",
-              ts: Date.now(),
-              data: null,
-            }),
-          }).catch(() => {});
+        broadcastToViewers(sess, {
+          type: "agent_action_failed",
+          sessionId,
+          stepId,
+          action,
+          error: err,
+          ts: Date.now(),
+        });
 
-          return; // ✅ critical: don't fall through to executeAgentAction
-        }
-
-        // Execute immediately
-        try {
-          const execRes = await executeAgentAction(sess, msg.action);
-
-          broadcastToViewers(sess, {
-            type: "agent_executed_action",
-            sessionId,
-            stepId: msg.stepId,
-            action: msg.action,
-            ts: Date.now(),
-          });
-
-          // If screenshot_region produced an image, forward it to viewers
-          if (execRes?.data?.type === "screenshot_region") {
-            broadcastToViewers(sess, {
-              type: "agent_screenshot_region",
-              sessionId,
-              stepId: msg.stepId,
-              ...execRes.data,
-              ts: Date.now(),
-            });
-          }
-
-          await fetchFn(`${WORKER_HTTP}/agent/action_result`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              sessionId,
-              stepId: msg.stepId,
-              ok: true,
-              ts: Date.now(),
-              data: execRes?.data || null,
-            }),
-          }).catch(() => {});
-        } catch (e) {
-          const err = String(e?.message || e);
-
-          broadcastToViewers(sess, {
-            type: "agent_action_failed",
-            sessionId,
-            stepId: msg.stepId,
-            action: msg.action,
-            error: err,
-            ts: Date.now(),
-          });
-
-          await fetchFn(`${WORKER_HTTP}/agent/action_result`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              sessionId,
-              stepId: msg.stepId,
-              ok: false,
-              error: err,
-              ts: Date.now(),
-              data: null,
-            }),
-          }).catch(() => {});
-        }
+        await postActionResult({
+          sessionId,
+          stepId,
+          ok: false,
+          error: err,
+          data: null,
+        });
       }
     });
 
