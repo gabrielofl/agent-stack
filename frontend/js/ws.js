@@ -52,28 +52,29 @@ export const wsClient = {
     onStatusChanged?.();
 
     state.ws.onopen = () => {
-      state.wsReconnectAttempt = 0;
-      state.lastWs = "open";
-      ui.adminLog("WS open");
-      ui.updateStatusMenu();
-      onStatusChanged?.();
-    };
+	state.wsReconnectAttempt = 0;
+	state.lastWs = "open";
+	ui.systemLog("WS open");
+	ui.updateStatusMenu();
+	onStatusChanged?.();
+	};
 
-    state.ws.onclose = () => {
-      state.lastWs = "closed";
-      ui.adminLog("WS closed", "warn");
-      ui.updateStatusMenu();
-      onStatusChanged?.();
-      this.scheduleReconnect(onStatusChanged);
-    };
+	state.ws.onclose = () => {
+	state.lastWs = "closed";
+	ui.systemLog("WS closed", "warn");
+	ui.updateStatusMenu();
+	onStatusChanged?.();
+	this.scheduleReconnect(onStatusChanged);
+	};
 
-    state.ws.onerror = () => {
-      state.lastWs = "error";
-      ui.setError("ws error");
-      ui.adminLog("WS error (check DevTools → Network → WS)", "error");
-      ui.updateStatusMenu();
-      onStatusChanged?.();
-    };
+	state.ws.onerror = () => {
+	state.lastWs = "error";
+	ui.setError("ws error");
+	ui.systemLog("WS error (check DevTools → Network → WS)", "error");
+	ui.updateStatusMenu();
+	onStatusChanged?.();
+	};
+
 
     state.ws.onmessage = (ev) => this.onMessage(ev, onStatusChanged);
   },

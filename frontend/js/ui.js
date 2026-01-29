@@ -42,9 +42,9 @@ export const ui = {
     this.tabAdmin = this.el("tab-admin");
 
     // Logs
-    this.userLogEl = this.el("userLog");
-	  this.adminLogEl = this.el("adminLog");
-	  this.agentLogEl = this.el("agentLog") || this.el("agentFeed");
+	this.userLogEl  = this.el("userLog");
+    this.adminLogEl = this.el("adminLog");
+    this.agentLogEl = this.el("agentLog") || this.el("agentFeed");
 
     // Admin/debug fields
     this.metricsBadge = this.el("metricsBadge");
@@ -157,17 +157,26 @@ this.btnAsk = this.el("btnAsk");
   },
 
   // -------------------- Feeds --------------------
+  // USER chat: only user-visible conversation lines.
   pushUserFeed(line, level = "info") {
     this._pushTo(this.userLogEl, line, level);
   },
 
+  // AGENT feed: stays in agent panel (not admin log).
   pushAgentFeed(line, level = "info") {
     this._pushTo(this.agentLogEl, line, level);
   },
 
+  // ADMIN log: system/debug/telemetry/reconnect/raw events
   adminLog(line, level = "info") {
     if (!state.isAdmin) return;
     this._pushTo(this.adminLogEl, line, level);
+  },
+
+  // NEW helper: system-level events should not spam user chat.
+  systemLog(line, level = "info") {
+    // always goes to admin
+    this.adminLog(line, level);
   },
 
   _pushTo(el, line, level) {

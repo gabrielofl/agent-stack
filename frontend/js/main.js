@@ -8,7 +8,7 @@ import { auth } from "./auth.js";
 
 ui.init();
 
-// Backend fqdn
+// -------------------- Backend fqdn --------------------
 state.backendFqdn = api.normalizeFqdn(
   localStorage.getItem("backendFqdn") || CONFIG.DEFAULT_BACKEND_FQDN
 );
@@ -23,6 +23,7 @@ ui.setSessionActive(false);
 // Auth bootstrap
 auth.init();
 
+// -------------------- Overall status --------------------
 function recomputeOverall() {
   const healthOk = state.lastHealthOk === true;
   const wsOk = state.ws && state.ws.readyState === 1;
@@ -37,7 +38,183 @@ function recomputeOverall() {
   ui.updateStatusMenu();
 }
 
-// -------------------- Health polling --------------------
+// -------------------- Chat command surface --------------------
+function echoUser(text) {
+  ui.pushUserFeed(`You: ${text}`);
+}
+
+function parseArgs(s) {
+  // keeps quoted groups: /type "hello world"
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
+async function handleStart(url) {
+  const startUrl = (url || "https://example.com").trim();
+  echoUser(`/start ${startUrl}`);
+
+  try {
+    state.session = await api.createSession(startUrl);
+
+    // reset runtime state
+    ui.setSessionActive(false);
+    state.frames = 0;
+    state.bytes = 0;
+    state.lastFrameAt = 0;
+    state.lastFrameUrl = "";
+    state.pendingStepId = "";
+    state.pendingAction = null;
+    state.lastQuestion = "";
+    state.lastProposedAction = null;
+    state.lastExecutedAction = null;
+    state.lastElements = [];
+
+    if (ui.sessionIdText) ui.sessionIdText.textContent = state.session.sessionId || "";
+
+    wsClient.connect(recomputeOverall);
+
+    // admin-only agent autostart (system-level -> admin log)
+    if (state.isAdmin && state.adminToken) {
+      ui.systemLog("Auto-starting agent (admin)…");
+      const goal = `Analyze this page and move toward the AD Intelligence goal (MVP).`;
+      await api.startAgent(state.session.sessionId, goal, "default");
+      ui.systemLog("Agent started.");
+    } else {
+      ui.systemLog("Agent autostart skipped (not admin).", "warn");
+    }
+  } catch (e) {
+    ui.systemLog(`Start session failed — ${String(e.message || e)}`, "error");
+    ui.setError("sessions failed");
+    recomputeOverall();
+  }
+}
+
+function handleReconnect() {
+  echoUser("/reconnect");
+  wsClient.connect(recomputeOverall);
+}
+
+function handleStop() {
+  echoUser("/stop");
+  try {
+    if (state.ws) state.ws.close();
+  } catch {}
+  state.ws = null;
+  state.session = null;
+  state.lastWs = "closed";
+  ui.setSessionActive(false);
+
+  state.pendingStepId = "";
+  state.pendingAction = null;
+  state.lastQuestion = "";
+  if (ui.btnApprove) ui.btnApprove.disabled = true;
+  if (ui.btnAsk) ui.btnAsk.disabled = true;
+
+  recomputeOverall();
+}
+
+function handleGoto(url) {
+  const u = (url || "").trim();
+  if (!u) return;
+  echoUser(`/goto ${u}`);
+  wsClient.send({ type: "goto", url: u });
+}
+
+function handleType(text) {
+  const t = (text || "");
+  if (!t) return;
+  // requirement: user chat must display all sent from textbox
+  echoUser(t);
+  wsClient.send({ type: "user_type", text: t });
+}
+
+// Optional extra commands
+function handleClick(x, y) {
+  const xi = Number(x),
+    yi = Number(y);
+  if (!Number.isFinite(xi) || !Number.isFinite(yi)) return;
+  echoUser(`/click ${xi} ${yi}`);
+  wsClient.send({ type: "user_click", x: xi, y: yi, button: "left" });
+}
+
+function handleScroll(dx, dy) {
+  const dxi = Number(dx),
+    dyi = Number(dy);
+  if (!Number.isFinite(dxi) || !Number.isFinite(dyi)) return;
+  echoUser(`/scroll ${dxi} ${dyi}`);
+  wsClient.send({ type: "user_scroll", dx: dxi, dy: dyi });
+}
+
+function handleKey(key) {
+  const k = (key || "").trim();
+  if (!k) return;
+  echoUser(`/key ${k}`);
+  wsClient.send({ type: "user_press_key", key: k });
+}
+
+async function dispatchChatCommand(raw) {
+  const line = (raw || "").trim();
+  if (!line) return;
+
+  // commands start with "/"
+  if (line.startsWith("/")) {
+    const parts = parseArgs(line);
+    const cmd = (parts[0] || "").toLowerCase();
+    const args = parts.slice(1);
+
+    switch (cmd) {
+      case "/start":
+        return handleStart(args[0]);
+      case "/reconnect":
+        return handleReconnect();
+      case "/stop":
+        return handleStop();
+      case "/goto":
+        return handleGoto(args[0]);
+      case "/type":
+        return handleType(args.join(" "));
+      case "/click":
+        return handleClick(args[0], args[1]);
+      case "/scroll":
+        return handleScroll(args[0], args[1]);
+      case "/key":
+        return handleKey(args.join(" "));
+      default:
+        // unknown command -> treat as text typed
+        return handleType(line);
+    }
+  }
+
+  // plain text => user_type
+  return handleType(line);
+}
+
+// Wire chat box + send button
+(function wireChatComposer() {
+  const input = ui.el("chatInput");
+  const send = ui.el("chatSend");
+  if (!input || !send) return;
+
+  async function submit() {
+    const text = input.value;
+    input.value = "";
+    await dispatchChatCommand(text);
+  }
+
+  send.onclick = submit;
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  });
+})();
+
+// -------------------- Health polling (system -> admin log) --------------------
 async function checkHealth() {
   try {
     const t0 = performance.now();
@@ -49,13 +226,11 @@ async function checkHealth() {
 
     if (!ok) ui.setError(`health ${status}`);
     else ui.setError("");
-
   } catch (e) {
     state.lastHealthOk = false;
     state.lastHttp = "HTTP down";
     ui.setError("health fetch failed");
-    ui.pushUserFeed(`Health check failed: ${String(e.message || e)}`, "warn");
-    ui.adminLog?.(`Health check failed: ${String(e.message || e)}`, "warn");
+    ui.systemLog(`Health check failed: ${String(e.message || e)}`, "warn");
   } finally {
     recomputeOverall();
   }
@@ -75,69 +250,34 @@ setInterval(() => {
   }
 }, CONFIG.FRAME_WATCHDOG_MS);
 
-// -------------------- Buttons --------------------
+// -------------------- Legacy buttons -> route through chat dispatcher --------------------
+// (kept so your hidden legacyControls don't break)
 ui.el("btnStart").onclick = async () => {
   const startUrl = (ui.el("startUrl").value || "https://example.com").trim();
-  ui.pushUserFeed(`You: start session → ${startUrl}`);
-
-  try {
-    state.session = await api.createSession(startUrl);
-
-    ui.setSessionActive(false);
-    state.frames = 0;
-    state.bytes = 0;
-    state.lastFrameAt = 0;
-    state.lastFrameUrl = "";
-    state.pendingStepId = "";
-    state.pendingAction = null;
-    state.lastQuestion = "";
-    state.lastProposedAction = null;
-    state.lastExecutedAction = null;
-    state.lastElements = [];
-
-    if (ui.sessionIdText) ui.sessionIdText.textContent = state.session.sessionId || "";
-
-    wsClient.connect(recomputeOverall);
-
-    // AUTO-START AGENT (admin only)
-    if (state.isAdmin && state.adminToken) {
-      const goal = `Analyze this page and move toward the AD Intelligence goal (MVP).`;
-      ui.pushUserFeed(`System: auto-starting agent (admin)…`);
-      await api.startAgent(state.session.sessionId, goal, "default");
-      ui.pushUserFeed(`System: agent started.`);
-    } else {
-      ui.pushUserFeed(`System: login to enable auto-start agent.`, "warn");
-    }
-  } catch (e) {
-    ui.pushUserFeed(`System: start session failed — ${String(e.message || e)}`, "error");
-    ui.setError("sessions failed");
-    recomputeOverall();
-  }
+  await dispatchChatCommand(`/start ${startUrl}`);
 };
 
-ui.el("btnReconnect").onclick = () => {
-  ui.pushUserFeed("You: reconnect websocket");
-  wsClient.connect(recomputeOverall);
+ui.el("btnReconnect").onclick = async () => {
+  await dispatchChatCommand("/reconnect");
 };
 
-ui.el("btnStop").onclick = () => {
-  ui.pushUserFeed("You: stop");
-  try { if (state.ws) state.ws.close(); } catch {}
-  state.ws = null;
-  state.session = null;
-  state.lastWs = "closed";
-  ui.setSessionActive(false);
-
-  state.pendingStepId = "";
-  state.pendingAction = null;
-  state.lastQuestion = "";
-  if (ui.btnApprove) ui.btnApprove.disabled = true;
-  if (ui.btnAsk) ui.btnAsk.disabled = true;
-
-  recomputeOverall();
+ui.el("btnStop").onclick = async () => {
+  await dispatchChatCommand("/stop");
 };
 
-// Approve pending agent action (admin only)
+ui.el("btnType").onclick = async () => {
+  const text = ui.el("typeText").value || "";
+  if (!text) return;
+  await dispatchChatCommand(`/type ${text}`);
+};
+
+ui.el("btnGoto").onclick = async () => {
+  const url = (ui.el("gotoUrl").value || "").trim();
+  if (!url) return;
+  await dispatchChatCommand(`/goto ${url}`);
+};
+
+// -------------------- Agent controls (admin actions; keep user-visible confirmations) --------------------
 ui.el("btnApprove").onclick = () => {
   if (!state.isAdmin) return ui.pushUserFeed("System: admin required to approve.", "warn");
   if (!state.pendingStepId) return ui.pushUserFeed("System: no pending step to approve.", "warn");
@@ -147,10 +287,10 @@ ui.el("btnApprove").onclick = () => {
     adminToken: state.adminToken,
     stepId: state.pendingStepId,
   });
+
   ui.pushUserFeed(`You: approve agent step ${state.pendingStepId}`);
 };
 
-// Send correction to agent (admin only) — requires api.correction() in api.js
 ui.el("btnAsk").onclick = async () => {
   if (!state.isAdmin) return ui.pushUserFeed("System: admin required.", "warn");
   if (!state.session?.sessionId) return ui.pushUserFeed("System: no active session.", "warn");
@@ -167,22 +307,7 @@ ui.el("btnAsk").onclick = async () => {
   }
 };
 
-// Manual user actions
-ui.el("btnType").onclick = () => {
-  const text = (ui.el("typeText").value || "");
-  if (!text) return;
-  ui.pushUserFeed(`You: type "${text.slice(0, 80)}"`);
-  wsClient.send({ type: "user_type", text });
-};
-
-ui.el("btnGoto").onclick = () => {
-  const url = (ui.el("gotoUrl").value || "").trim();
-  if (!url) return;
-  ui.pushUserFeed(`You: goto ${url}`);
-  wsClient.send({ type: "goto", url });
-};
-
-// -------------------- Viewer interactions --------------------
+// -------------------- Viewer interactions (user actions -> user chat) --------------------
 ui.screenEl.addEventListener("click", (e) => {
   if (!state.ws || state.ws.readyState !== 1) return;
   const rect = ui.screenEl.getBoundingClientRect();
@@ -194,18 +319,22 @@ ui.screenEl.addEventListener("click", (e) => {
 });
 
 // Scroll wheel -> user_scroll
-ui.screenEl.addEventListener("wheel", (e) => {
-  if (!state.ws || state.ws.readyState !== 1) return;
-  e.preventDefault();
+ui.screenEl.addEventListener(
+  "wheel",
+  (e) => {
+    if (!state.ws || state.ws.readyState !== 1) return;
+    e.preventDefault();
 
-  const dy = Math.max(-2000, Math.min(2000, Math.round(e.deltaY)));
-  const dx = Math.max(-2000, Math.min(2000, Math.round(e.deltaX || 0)));
+    const dy = Math.max(-2000, Math.min(2000, Math.round(e.deltaY)));
+    const dx = Math.max(-2000, Math.min(2000, Math.round(e.deltaX || 0)));
 
-  ui.pushUserFeed(`You: scroll dx=${dx} dy=${dy}`);
-  wsClient.send({ type: "user_scroll", dx, dy });
-}, { passive: false });
+    ui.pushUserFeed(`You: scroll dx=${dx} dy=${dy}`);
+    wsClient.send({ type: "user_scroll", dx, dy });
+  },
+  { passive: false }
+);
 
-// Key presses -> user_press_key
+// Key presses -> user_press_key (ignore when typing in input/textarea)
 document.addEventListener("keydown", (e) => {
   if (!state.ws || state.ws.readyState !== 1) return;
 
@@ -223,7 +352,7 @@ document.addEventListener("keydown", (e) => {
   wsClient.send({ type: "user_press_key", key });
 });
 
-// Hover (throttled) -> user_hover (don’t spam chat)
+// Hover (throttled) -> user_hover (no chat spam)
 let lastHoverAt = 0;
 ui.screenEl.addEventListener("mousemove", (e) => {
   if (!state.ws || state.ws.readyState !== 1) return;
@@ -245,7 +374,11 @@ ui.statusBtn.onclick = () => {
 };
 
 document.addEventListener("click", (e) => {
-  if (!ui.statusMenu.hidden && !ui.statusBtn.contains(e.target) && !ui.statusMenu.contains(e.target)) {
+  if (
+    !ui.statusMenu.hidden &&
+    !ui.statusBtn.contains(e.target) &&
+    !ui.statusMenu.contains(e.target)
+  ) {
     ui.statusMenu.hidden = true;
   }
 });
@@ -264,5 +397,9 @@ ui.adminPass.addEventListener("keydown", (e) => {
 });
 
 // -------------------- Boot --------------------
-ui.pushUserFeed(`System: viewer loaded. origin=${location.origin}`);
-ui.pushUserFeed(`System: backend=${state.backendFqdn}`);
+// Debug/system -> admin log only
+ui.systemLog(`Viewer loaded. origin=${location.origin}`);
+ui.systemLog(`Backend=${state.backendFqdn}`);
+
+// User-friendly tip (not a debug event)
+ui.pushUserFeed(`Tip: type /start https://example.com to begin.`);
