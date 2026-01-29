@@ -6,7 +6,10 @@ export const ui = {
 
   init() {
     // Viewer
-    this.screenEl = this.el("screen");
+	  this.screenEl = this.el("screen");
+	  this.overlay = this.el("overlay");
+this.ctx = this.overlay?.getContext?.("2d");
+
     this.pageUrl = this.el("pageUrl");
     this.clickText = this.el("clickText");
     this.sessionDot = this.el("sessionDot");
@@ -98,7 +101,58 @@ export const ui = {
   updateMetrics() {
     if (!this.metricsBadge) return;
     this.metricsBadge.textContent = `frames: ${state.frames} • bytes: ${formatBytes(state.bytes)}`;
+	},
+  renderOverlays() {
+  if (!this.overlay || !this.ctx || !this.screenEl) return;
+  const ctx = this.ctx;
+
+  // Match canvas resolution to displayed image size
+  const rect = this.screenEl.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width));
+  const h = Math.max(1, Math.floor(rect.height));
+  if (this.overlay.width !== w) this.overlay.width = w;
+  if (this.overlay.height !== h) this.overlay.height = h;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Convert viewport coords -> canvas coords
+  const vx = state.viewport?.width || 1280;
+  const vy = state.viewport?.height || 720;
+
+  const toCanvas = (x, y) => ({
+    x: (x / vx) * w,
+    y: (y / vy) * h,
+  });
+
+  // Proposed action marker (yellow)
+  if (state.lastProposedAction?.type === "click") {
+    const p = toCanvas(state.lastProposedAction.x, state.lastProposedAction.y);
+    ctx.fillStyle = "rgba(255, 215, 0, 0.35)";
+    ctx.strokeStyle = "rgba(255, 215, 0, 0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   }
+
+  // Executed action marker (green)
+  if (state.lastExecutedAction?.type === "click") {
+    const p = toCanvas(state.lastExecutedAction.x, state.lastExecutedAction.y);
+    ctx.fillStyle = "rgba(0, 200, 0, 0.25)";
+    ctx.strokeStyle = "rgba(0, 200, 0, 0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+
+  // Optional: element boxes (if you send them)
+  const els = state.lastElements || [];
+  ctx.strokeStyle = "rgba(0, 160, 255, 0.35)";
+  ctx.lineWidth = 1;
+  for (const e of els.slice(0, 20)) {
+    const tl = toCanvas(e.x - e.w/2, e.y - e.h/2);
+    const br = toCanvas(e.x + e.w/2, e.y + e.h/2);
+    ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+  }
+}
+
 };
 
 function formatBytes(n) {

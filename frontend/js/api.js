@@ -48,6 +48,21 @@ export const api = {
   const text = await res.text();
   if (!res.ok) throw new Error(`admin/me ${res.status}: ${text.slice(0,200)}`);
   return JSON.parse(text);
-}
+  },
+  
+  async startAgent(sessionId, goal, model = "default") {
+  const res = await fetch(`${this.base()}/agent/start`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${state.adminToken}`,
+    },
+    body: JSON.stringify({ sessionId, goal, model }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`agent/start ${res.status}: ${text.slice(0,200)}`);
+  return JSON.parse(text);
+},
+
 
 };

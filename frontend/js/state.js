@@ -16,4 +16,10 @@ export const state = {
 
   isAdmin: false,
   adminToken: localStorage.getItem("adminToken") || "",
+  lastProposedAction: null,
+  lastExecutedAction: null,
+  lastElements: [],
+  lastProposedAt: 0,
+  lastExecutedAt: 0,
+
 };

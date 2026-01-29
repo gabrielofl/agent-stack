@@ -1,3 +1,4 @@
-script
+script.sh
 node_modules
 backend/package-lock*
+worker-agent.yaml

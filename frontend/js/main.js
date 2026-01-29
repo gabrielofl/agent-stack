@@ -78,15 +78,26 @@ ui.el("btnStart").onclick = async () => {
 
   try {
     state.session = await api.createSession(startUrl);
-    // We only consider session "active" after frames arrive, but we can show as pending:
     ui.setSessionActive(false);
     wsClient.connect(recomputeOverall);
+
+    // AUTO-START AGENT (only if admin logged in)
+    if (state.isAdmin && state.adminToken) {
+      const goal = `Analyze this page and move toward the AD Intelligence goal (MVP).`; // replace with your real default
+      ui.log(`Auto-starting agent…`);
+      await api.startAgent(state.session.sessionId, goal, "default");
+      ui.log(`Agent started.`);
+    } else {
+      ui.log(`Not admin: agent will not auto-start. Login to enable.`, "warn");
+    }
+
   } catch (e) {
     ui.log(`Start session failed: ${String(e.message || e)}`, "error");
     ui.setError("sessions failed");
     recomputeOverall();
   }
 };
+
 
 ui.el("btnReconnect").onclick = () => wsClient.connect(recomputeOverall);
 

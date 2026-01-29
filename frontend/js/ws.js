@@ -3,6 +3,16 @@ import { state } from "./state.js";
 import { ui } from "./ui.js";
 import { CONFIG } from "./config.js";
 
+function fmtAction(a) {
+  if (!a) return "";
+  if (a.type === "click") return `click @ ${a.x},${a.y}`;
+  if (a.type === "type") return `type "${(a.text || "").slice(0, 80)}"`;
+  if (a.type === "goto") return `goto ${a.url}`;
+  if (a.type === "wait") return `wait ${a.ms}ms`;
+  if (a.type === "ask_user") return `ask_user: ${a.question || ""}`;
+  return `${a.type}`;
+}
+
 export const wsClient = {
   wsUrl: "",
 
@@ -67,11 +77,59 @@ export const wsClient = {
     try { msg = JSON.parse(ev.data); }
     catch { ui.log("WS message: non-JSON payload", "warn"); return; }
 
-    if (msg.type !== "frame") {
-      if (state.isAdmin) ui.log(`WS: ${JSON.stringify(msg)}`);
+    // --------------------------
+    // ✅ 1) Agent / worker events
+    // --------------------------
+    if (msg.type === "agent_event") {
+      // backend forwards worker "agent_status"/"agent_error" as agent_event
+      if (msg.error) ui.log(`[worker] ${msg.error}`, "error");
+      else if (msg.status) ui.log(`[worker] ${msg.status}`, "info");
+      else ui.log(`[worker] ${JSON.stringify(msg).slice(0, 400)}`, "info");
       return;
     }
 
+    if (msg.type === "agent_proposed_action") {
+      state.lastProposedAction = msg.action || null;
+      state.lastProposedAt = Date.now();
+      ui.log(`[agent] propose ${fmtAction(msg.action)}${msg.explanation ? " — " + msg.explanation : ""}`);
+
+      // If you implement overlays, redraw here
+      if (ui.renderOverlays) ui.renderOverlays();
+      return;
+    }
+
+    // This requires a tiny backend change (broadcast agent_executed_action after executing)
+    if (msg.type === "agent_executed_action") {
+      state.lastExecutedAction = msg.action || null;
+      state.lastExecutedAt = Date.now();
+      ui.log(`[agent] executed ${fmtAction(msg.action)}`);
+
+      if (ui.renderOverlays) ui.renderOverlays();
+      return;
+    }
+
+    // Optional: if you broadcast clickable elements to frontend
+    if (msg.type === "agent_elements") {
+      state.lastElements = msg.elements || [];
+      if (ui.renderOverlays) ui.renderOverlays();
+      return;
+    }
+
+    // Optional: if worker returns ask_user and backend forwards it
+    if (msg.type === "agent_question") {
+      ui.log(`[agent] question: ${msg.question || "—"}`, "warn");
+      return;
+    }
+
+    // Don't spam full JSON dumps anymore; keep admin-only fallback:
+    if (msg.type !== "frame") {
+      if (state.isAdmin) ui.log(`WS: ${JSON.stringify(msg).slice(0, 400)}`);
+      return;
+    }
+
+    // --------------------------
+    // ✅ 2) Frame handling (unchanged)
+    // --------------------------
     state.frames++;
     state.lastFrameAt = Date.now();
     state.lastFrameUrl = msg.url || state.lastFrameUrl;
@@ -79,7 +137,6 @@ export const wsClient = {
     if (msg.viewport) state.viewport = msg.viewport;
     if (msg.img) ui.screenEl.src = msg.img;
 
-    // URL bar (only)
     if (ui.pageUrl) ui.pageUrl.textContent = (msg.url || "—").replace(/^https?:\/\//, "");
 
     // FPS calc
@@ -92,8 +149,10 @@ export const wsClient = {
     ui.updateMetrics();
     ui.updateStatusMenu();
 
-    // Mark session active once we receive frames
     ui.setSessionActive(true);
+
+    // If overlays exist, redraw after frame updates too (keeps alignment)
+    if (ui.renderOverlays) ui.renderOverlays();
 
     onStatusChanged?.();
   },

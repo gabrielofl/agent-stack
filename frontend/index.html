@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>AD Intelligence • Wiguru Agent</title>
+  <title>Wiguru AD Intelligence</title>
   <link rel="stylesheet" href="./styles/app.css" />
 </head>
 <body>
@@ -59,7 +59,11 @@
   <div class="pill">Click: <span class="mono" id="clickText">—</span></div>
 </div>
 
-<img id="screen" class="screen" alt="Waiting for frames…" />
+<div class="screen-layer">
+  <img id="screen" class="screen" />
+  <canvas id="overlay" class="overlay"></canvas>
+</div>
+
 
         </div>
 
@@ -136,7 +140,7 @@
   </div>
 
   <footer class="footer">
-    <div>© <strong>Wiguru</strong> — Agent Viewer</div>
+    <div>© <strong>Wiguru</strong></div>
   </footer>
 
   <!-- Modular JS (no bundler) -->
