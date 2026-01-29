@@ -13,15 +13,23 @@ import { agentRouter } from "./routes/agent.routes.js";
 export function createApp() {
   const app = express();
 
-  app.use(
-    cors({
-      origin: corsOriginDelegate,
-    })
-  );
+  const corsOptions = {
+    origin: corsOriginDelegate,
+    methods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 204,
+    maxAge: 86400,
+  };
+
+  // ✅ CORS headers on all requests
+  app.use(cors(corsOptions));
+
+  // ✅ Preflight handler for all routes (prevents 405 on OPTIONS)
+  app.options("*", cors(corsOptions));
 
   app.use(express.json({ limit: "2mb" }));
 
-  // Routes (same URLs as before)
+  // Routes
   app.use(healthRouter);
   app.use(adminRouter);
   app.use(workerRouter);

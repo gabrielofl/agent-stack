@@ -50,19 +50,19 @@ export const api = {
   return JSON.parse(text);
   },
   
-  async startAgent(sessionId, goal, model = "default") {
+  async startAgent(sessionId, model = "default") {
   const res = await fetch(`${this.base()}/agent/start`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "authorization": `Bearer ${state.adminToken}`,
     },
-    body: JSON.stringify({ sessionId, goal, model }),
+    body: JSON.stringify({ sessionId, model }),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`agent/start ${res.status}: ${text.slice(0,200)}`);
   return JSON.parse(text);
-	},
+},
   
   async correction(sessionId, text, mode = "override") {
   const res = await fetch(`${this.base()}/agent/correction`, {
