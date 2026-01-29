@@ -34,7 +34,7 @@ export function validateAndNormalizeDecision(raw, ctx) {
   const H = Number(viewport.height || 720);
 
   const decision = typeof raw === "object" && raw ? raw : {};
-  const requiresApproval = !!decision.requiresApproval;
+  const requiresApproval = false;
 
   const action = typeof decision.action === "object" && decision.action ? decision.action : null;
   if (!action) return { ok: false, error: "missing action object" };
@@ -150,7 +150,7 @@ export function validateAndNormalizeDecision(raw, ctx) {
 
   if (type === "ask_user") {
     const question = safeStr(action.question, 400).trim() || "What should I do next?";
-    return { ok: true, decision: { requiresApproval: true, action: { type, question } } };
+    return { ok: true, decision: { requiresApproval: false, action: { type, question } } };
   }
 
   return { ok: false, error: "unreachable" };

@@ -556,3 +556,70 @@ footer.footer{
   max-height: 180px;        /* keep feed contained inside expanded body */
   overflow: auto !important;
 }
+
+/* =========================
+   ADMIN TAB: layout + scroll
+   ========================= */
+
+/* Make the admin tab a real column that can allocate height to the log */
+#tab-admin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0; /* IMPORTANT for nested scrolling */
+}
+
+/* Key/Value block: readable spacing + wrapping long URLs */
+#tab-admin .kv {
+  display: grid;
+  gap: 8px;
+}
+
+#tab-admin .kv > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;              /* fixes "Originhttps://..." */
+  min-width: 0;           /* allows children to shrink */
+}
+
+#tab-admin .kv span {
+  opacity: 0.75;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+#tab-admin .kv b {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere; /* wrap long urls/ids */
+  word-break: break-word;
+}
+
+/* Ensure the buttons row never forces the log off-screen */
+#tab-admin .row {
+  flex: 0 0 auto;
+}
+
+/* The actual admin log must be the scroll container */
+#adminLog {
+  flex: 1 1 auto;
+  min-height: 0;          /* IMPORTANT for nested scrolling */
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  /* Make it look like your other logs */
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.35;
+
+  padding: 12px;
+  border-radius: 12px;
+}
+
+/* Optional: if your generic .log class is missing overflow, add this safely */
+.log {
+  overflow: auto;
+  min-height: 0;
+}

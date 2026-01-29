@@ -97,7 +97,24 @@ export async function ensureWorkerStream(sessionId) {
       ) {
         broadcastToViewers(sess, { type: "agent_event", ...msg });
         return;
-      }
+	  }
+		if (msg.type === "agent_done") {
+  // mark idle
+  if (sess.agent) {
+    sess.agent.running = false;
+    sess.agent.goal = "";
+  }
+
+  broadcastToViewers(sess, {
+    type: "agent_event",
+    sessionId,
+    status: "done",
+    message: msg.message || "Done. Waiting for next instruction.",
+    ts: Date.now(),
+  });
+
+  return;
+}
 
       if (msg.type === "propose_action") {
         // forward proposed action to frontend viewers

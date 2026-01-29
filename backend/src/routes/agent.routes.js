@@ -10,39 +10,58 @@ import { executeAgentAction } from "../services/pageHelpers.js";
 export const agentRouter = Router();
 
 // ---- Agent control ----
+// src/routes/agent.routes.js
 agentRouter.post("/agent/start", requireAdmin, async (req, res) => {
-  const { sessionId, goal, model } = req.body || {};
+  const { sessionId, model } = req.body || {};
   if (!sessionId || !sessions.has(sessionId)) return res.status(400).json({ error: "bad sessionId" });
-  if (!goal) return res.status(400).json({ error: "missing goal" });
 
   const sess = sessions.get(sessionId);
 
-  // ensure worker WS is up (best-effort; start still proceeds via HTTP)
-  try {
-    await ensureWorkerStream(sessionId);
-  } catch {
-    // worker may still be reachable by HTTP; don’t hard-fail here
-  }
+  // ensure worker WS is up
+  try { await ensureWorkerStream(sessionId); } catch {}
 
-  // mark running
+  // mark agent as idle (waiting)
   sess.agent = {
-    running: true,
-    goal,
+    running: false,
+    goal: "",
     model: model || "default",
     lastObsAt: 0,
     pendingApprovals: new Map(),
   };
 
+  // IMPORTANT: do NOT call worker /agent/start yet (no goal)
+  res.json({ ok: true, status: "idle" });
+});
+
+agentRouter.post("/agent/instruction", requireAdmin, async (req, res) => {
+  const { sessionId, text, model } = req.body || {};
+  if (!sessionId || !sessions.has(sessionId)) return res.status(400).json({ error: "bad sessionId" });
+  if (!text) return res.status(400).json({ error: "missing text" });
+
+  const sess = sessions.get(sessionId);
+
+  // make sure stream is connected
+  try { await ensureWorkerStream(sessionId); } catch {}
+
+  // set "running"
+  sess.agent = sess.agent || { pendingApprovals: new Map() };
+  sess.agent.running = true;
+  sess.agent.goal = String(text).trim();
+  sess.agent.model = model || sess.agent.model || "default";
+  sess.agent.lastObsAt = 0;
+  if (!sess.agent.pendingApprovals) sess.agent.pendingApprovals = new Map();
+
+  // start the worker with this instruction as goal
   const r = await fetchFn(`${WORKER_HTTP}/agent/start`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId, goal, model: model || "default" }),
+    body: JSON.stringify({ sessionId, goal: sess.agent.goal, model: sess.agent.model }),
   });
 
-  const text = await r.text();
-  if (!r.ok) return res.status(500).json({ error: "worker start failed", detail: text.slice(0, 200) });
+  const out = await r.text();
+  if (!r.ok) return res.status(500).json({ error: "worker start failed", detail: out.slice(0, 200) });
 
-  res.json({ ok: true });
+  res.json({ ok: true, status: "running" });
 });
 
 agentRouter.post("/agent/correction", requireAdmin, async (req, res) => {
