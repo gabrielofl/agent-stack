@@ -39,7 +39,6 @@ export const ui = {
     this.tabUserBtn = this.el("tabUserBtn");
     this.tabAdminBtn = this.el("tabAdminBtn");
     this.tabUser = this.el("tab-user");
-    this.tabAgent = this.el("tab-agent");
     this.tabAdmin = this.el("tab-admin");
 
     // Logs

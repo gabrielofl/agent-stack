@@ -1,275 +1,241 @@
-// main.js
-import { CONFIG } from "./config.js";
+// ws.js
 import { state } from "./state.js";
 import { ui } from "./ui.js";
-import { api } from "./api.js";
-import { wsClient } from "./ws.js";
-import { auth } from "./auth.js";
+import { CONFIG } from "./config.js";
 
-ui.init();
-
-// Backend fqdn (still used, but no longer shown)
-state.backendFqdn = api.normalizeFqdn(
-  localStorage.getItem("backendFqdn") || CONFIG.DEFAULT_BACKEND_FQDN
-);
-
-// Optional admin debug
-if (ui.originText) ui.originText.textContent = location.origin;
-
-// Default UI state
-ui.setAdminMode(false);
-ui.setSessionActive(false);
-
-// Auth bootstrap
-auth.init();
-
-function recomputeOverall() {
-  const healthOk = state.lastHealthOk === true;
-  const wsOk = state.ws && state.ws.readyState === 1;
-
-  const frameOk =
-    !state.session || !state.lastFrameAt
-      ? true
-      : Date.now() - state.lastFrameAt < CONFIG.FRAME_STALE_MS;
-
-  const ok = healthOk && wsOk && frameOk && !state.lastError;
-  ui.setOverallOk(ok);
-  ui.updateStatusMenu();
-}
-
-// -------------------- Health polling --------------------
-async function checkHealth() {
-  try {
-    const t0 = performance.now();
-    const { ok, status } = await api.health();
-    const ms = Math.round(performance.now() - t0);
-
-    state.lastHealthOk = ok;
-    state.lastHttp = `HTTP ${status} (${ms}ms)`;
-
-    if (!ok) ui.setError(`health ${status}`);
-    else ui.setError("");
-  } catch (e) {
-    state.lastHealthOk = false;
-    state.lastHttp = "HTTP down";
-    ui.setError("health fetch failed");
-    ui.log(`Health check failed: ${String(e.message || e)}`, "warn");
-  } finally {
-    recomputeOverall();
-  }
-}
-setInterval(checkHealth, CONFIG.HEALTH_INTERVAL_MS);
-checkHealth();
-
-// -------------------- Frame watchdog --------------------
-setInterval(() => {
-  if (!state.ws || state.ws.readyState !== 1) return;
-  if (!state.lastFrameAt) return;
-
-  const delta = Date.now() - state.lastFrameAt;
-  if (delta > CONFIG.FRAME_STALE_MS) {
-    ui.setError("no frames");
-    recomputeOverall();
-  }
-}, CONFIG.FRAME_WATCHDOG_MS);
-
-// -------------------- Buttons --------------------
-ui.el("btnStart").onclick = async () => {
-  const startUrl = (ui.el("startUrl").value || "https://example.com").trim();
-  ui.log(`Creating session… url=${startUrl}`);
-
-  try {
-    state.session = await api.createSession(startUrl);
-
-    // reset session UI bits
-    ui.setSessionActive(false);
-    state.frames = 0;
-    state.bytes = 0;
-    state.lastFrameAt = 0;
-    state.lastFrameUrl = "";
-    state.pendingStepId = "";
-    state.pendingAction = null;
-    state.lastQuestion = "";
-    state.lastProposedAction = null;
-    state.lastExecutedAction = null;
-    state.lastElements = [];
-
-    // Connect WS viewer stream
-    wsClient.connect(recomputeOverall);
-
-    // AUTO-START AGENT (only if admin logged in)
-    if (state.isAdmin && state.adminToken) {
-      const goal = `Analyze this page and move toward the AD Intelligence goal (MVP).`; // replace with your real default
-      ui.log(`Auto-starting agent…`);
-      await api.startAgent(state.session.sessionId, goal, "default");
-      ui.log(`Agent started.`);
-    } else {
-      ui.log(`Not admin: agent will not auto-start. Login to enable.`, "warn");
+function fmtAction(a) {
+  if (!a) return "";
+  switch (a.type) {
+    case "click": return `click @ ${a.x},${a.y}`;
+    case "hover": return a.selector ? `hover "${a.selector}"` : `hover @ ${a.x},${a.y}`;
+    case "type": return `type "${(a.text || "").slice(0, 60)}"`;
+    case "type_in_selector": return `type_in_selector "${a.selector}" "${(a.text || "").slice(0, 40)}"`;
+    case "select": {
+      const v = a.value != null ? `value="${a.value}"`
+        : a.label != null ? `label="${a.label}"`
+        : `index=${a.index}`;
+      return `select "${a.selector}" ${v}`;
     }
-  } catch (e) {
-    ui.log(`Start session failed: ${String(e.message || e)}`, "error");
-    ui.setError("sessions failed");
-    recomputeOverall();
+    case "press_key": return `press_key ${a.key}`;
+    case "scroll": return `scroll dx=${a.dx ?? 0} dy=${a.dy ?? 0}`;
+    case "goto": return `goto ${a.url}`;
+    case "wait": return `wait ${a.ms}ms`;
+    case "screenshot_region": return `screenshot_region @ ${a.x},${a.y} ${a.w}x${a.h}`;
+    case "ask_user": return `ask_user: ${a.question || ""}`;
+    default: return `${a.type}`;
   }
-};
+}
 
-ui.el("btnReconnect").onclick = () => wsClient.connect(recomputeOverall);
+function wsScheme() {
+  // match the page scheme
+  return location.protocol === "https:" ? "wss" : "ws";
+}
 
-ui.el("btnStop").onclick = () => {
-  try {
-    if (state.ws) state.ws.close();
-  } catch {}
-  state.ws = null;
-  state.session = null;
-  state.lastWs = "closed";
-  ui.setSessionActive(false);
+export const wsClient = {
+  wsUrl: "",
 
-  // clear agent UI
-  state.pendingStepId = "";
-  state.pendingAction = null;
-  state.lastQuestion = "";
-  if (ui.btnApprove) ui.btnApprove.disabled = true;
-  if (ui.btnAsk) ui.btnAsk.disabled = true;
+  connect(onStatusChanged) {
+    if (!state.session?.wsPath) {
+      ui.pushUserFeed("System: no wsPath — start a session first.", "warn");
+      return;
+    }
 
-  recomputeOverall();
-};
+    this.wsUrl = `${wsScheme()}://${state.backendFqdn}${state.session.wsPath}`;
 
-// Approve pending agent action (admin only)
-ui.el("btnApprove").onclick = () => {
-  if (!state.isAdmin) return ui.log("Admin required to approve.", "warn");
-  if (!state.pendingStepId) return ui.log("No pending step to approve.", "warn");
+    if (state.isAdmin && ui.wsUrlText) ui.wsUrlText.textContent = this.wsUrl;
 
-  wsClient.send({
-    type: "agent_approve",
-    adminToken: state.adminToken,
-    stepId: state.pendingStepId,
-  });
-  ui.log(`Sent agent_approve for ${state.pendingStepId}`);
-};
+    try { if (state.ws) state.ws.close(); } catch {}
+    state.ws = new WebSocket(this.wsUrl);
 
-// Send correction to agent (admin only)
-// Requires api.correction() to exist in api.js (as discussed)
-ui.el("btnAsk").onclick = async () => {
-  if (!state.isAdmin) return ui.log("Admin required.", "warn");
-  if (!state.session?.sessionId) return ui.log("No active session.", "warn");
+    state.lastWs = "connecting…";
+    ui.updateStatusMenu();
+    onStatusChanged?.();
 
-  const text = prompt("Send guidance to agent:", state.lastQuestion || "");
-  if (!text) return;
+    state.ws.onopen = () => {
+      state.wsReconnectAttempt = 0;
+      state.lastWs = "open";
+      ui.adminLog("WS open");
+      ui.updateStatusMenu();
+      onStatusChanged?.();
+    };
 
-  try {
-    await api.correction(state.session.sessionId, text, "override");
-    ui.log("Sent agent correction.");
-  } catch (e) {
-    ui.log(`Correction failed: ${String(e?.message || e)}`, "error");
-  }
-};
+    state.ws.onclose = () => {
+      state.lastWs = "closed";
+      ui.adminLog("WS closed", "warn");
+      ui.updateStatusMenu();
+      onStatusChanged?.();
+      this.scheduleReconnect(onStatusChanged);
+    };
 
-// Manual user inputs
-ui.el("btnType").onclick = () => {
-  const text = ui.el("typeText").value || "";
-  if (text) wsClient.send({ type: "user_type", text });
-};
+    state.ws.onerror = () => {
+      state.lastWs = "error";
+      ui.setError("ws error");
+      ui.adminLog("WS error (check DevTools → Network → WS)", "error");
+      ui.updateStatusMenu();
+      onStatusChanged?.();
+    };
 
-ui.el("btnGoto").onclick = () => {
-  const url = (ui.el("gotoUrl").value || "").trim();
-  if (url) wsClient.send({ type: "goto", url });
-};
-
-// -------------------- Viewer interactions --------------------
-
-// Click mapping (uses viewport from backend)
-ui.screenEl.addEventListener("click", (e) => {
-  if (!state.ws || state.ws.readyState !== 1) return;
-
-  const rect = ui.screenEl.getBoundingClientRect();
-  const x = Math.round(((e.clientX - rect.left) / rect.width) * state.viewport.width);
-  const y = Math.round(((e.clientY - rect.top) / rect.height) * state.viewport.height);
-
-  ui.clickText.textContent = `${x},${y}`;
-  wsClient.send({ type: "user_click", x, y, button: "left" });
-});
-
-// Scroll wheel -> user_scroll
-ui.screenEl.addEventListener(
-  "wheel",
-  (e) => {
-    if (!state.ws || state.ws.readyState !== 1) return;
-    e.preventDefault();
-
-    const dy = Math.max(-2000, Math.min(2000, Math.round(e.deltaY)));
-    const dx = Math.max(-2000, Math.min(2000, Math.round(e.deltaX || 0)));
-
-    wsClient.send({ type: "user_scroll", dx, dy });
+    state.ws.onmessage = (ev) => this.onMessage(ev, onStatusChanged);
   },
-  { passive: false }
-);
 
-// Key presses -> user_press_key
-document.addEventListener("keydown", (e) => {
-  if (!state.ws || state.ws.readyState !== 1) return;
+  scheduleReconnect(onStatusChanged) {
+    if (!state.session?.wsPath) return;
+    state.wsReconnectAttempt = (state.wsReconnectAttempt || 0) + 1;
 
-  // avoid interfering with inputs
-  const tag = document.activeElement?.tagName?.toLowerCase();
-  if (tag === "input" || tag === "textarea") return;
+    const delay = Math.min(10000, Math.round(800 * Math.pow(2, state.wsReconnectAttempt - 1)));
+    ui.adminLog(`Reconnecting in ${delay}ms… (attempt ${state.wsReconnectAttempt})`, "warn");
 
-  // Playwright-like combo string
-  const parts = [];
-  if (e.ctrlKey) parts.push("Control");
-  if (e.altKey) parts.push("Alt");
-  if (e.shiftKey) parts.push("Shift");
+    if (state.wsReconnectTimer) clearTimeout(state.wsReconnectTimer);
+    state.wsReconnectTimer = setTimeout(() => this.connect(onStatusChanged), delay);
+  },
 
-  // normalize common keys to Playwright style (optional)
-  const key = e.key; // "Enter", "Tab", "ArrowDown", "a", ...
-  parts.push(key);
+  onMessage(ev, onStatusChanged) {
+    state.bytes += ev.data?.length || 0;
 
-  wsClient.send({ type: "user_press_key", key: parts.join("+") });
-});
+    let msg;
+    try { msg = JSON.parse(ev.data); }
+    catch {
+      ui.adminLog("WS message: non-JSON payload", "warn");
+      return;
+    }
 
-// Hover (throttled) -> user_hover
-let lastHoverAt = 0;
-ui.screenEl.addEventListener("mousemove", (e) => {
-  if (!state.ws || state.ws.readyState !== 1) return;
+    // -------- Agent / worker events --------
+    if (msg.type === "agent_event") {
+      const line = msg.error ? `[worker] ${msg.error}` :
+                   msg.status ? `[worker] ${msg.status}` :
+                   `[worker] ${JSON.stringify(msg).slice(0, 400)}`;
+      ui.pushAgentFeed(line, msg.error ? "error" : "info");
+      return;
+    }
 
-  const now = Date.now();
-  if (now - lastHoverAt < 100) return; // ~10hz
-  lastHoverAt = now;
+    if (msg.type === "agent_proposed_action") {
+      state.lastProposedAction = msg.action || null;
+      state.lastProposedAt = Date.now();
 
-  const rect = ui.screenEl.getBoundingClientRect();
-  const x = Math.round(((e.clientX - rect.left) / rect.width) * state.viewport.width);
-  const y = Math.round(((e.clientY - rect.top) / rect.height) * state.viewport.height);
+      ui.setAgentSummary({
+        stateText: "proposed",
+        stepText: msg.stepId || "—",
+        lastText: fmtAction(msg.action),
+      });
 
-  wsClient.send({ type: "user_hover", x, y });
-});
+      ui.pushAgentFeed(
+        `PROPOSE ${msg.stepId}: ${fmtAction(msg.action)}${msg.explanation ? " — " + msg.explanation : ""}`,
+        "info"
+      );
 
-// -------------------- Status dropdown --------------------
-ui.statusBtn.onclick = () => {
-  ui.statusMenu.hidden = !ui.statusMenu.hidden;
-  ui.updateStatusMenu();
-};
+      if (ui.renderOverlays) ui.renderOverlays();
+      return;
+    }
 
-document.addEventListener("click", (e) => {
-  if (
-    !ui.statusMenu.hidden &&
-    !ui.statusBtn.contains(e.target) &&
-    !ui.statusMenu.contains(e.target)
-  ) {
-    ui.statusMenu.hidden = true;
+    if (msg.type === "agent_action_needs_approval") {
+      state.pendingStepId = msg.stepId || "";
+      state.pendingAction = state.lastProposedAction || null;
+
+      ui.setAgentSummary({
+        stateText: "needs approval",
+        stepText: msg.stepId || "—",
+        lastText: state.pendingAction ? fmtAction(state.pendingAction) : "—",
+      });
+
+      ui.pushAgentFeed(`NEEDS APPROVAL: ${msg.stepId}`, "warn");
+      if (ui.btnApprove) ui.btnApprove.disabled = !state.isAdmin || !state.pendingStepId;
+      return;
+    }
+
+    if (msg.type === "agent_executed_action") {
+      state.lastExecutedAction = msg.action || null;
+      state.lastExecutedAt = Date.now();
+
+      if (state.pendingStepId && msg.stepId === state.pendingStepId) {
+        state.pendingStepId = "";
+        state.pendingAction = null;
+        if (ui.btnApprove) ui.btnApprove.disabled = true;
+      }
+
+      ui.setAgentSummary({
+        stateText: "executed",
+        stepText: msg.stepId || "—",
+        lastText: fmtAction(msg.action),
+      });
+
+      ui.pushAgentFeed(`EXEC ${msg.stepId}: ${fmtAction(msg.action)}`, "info");
+      if (ui.renderOverlays) ui.renderOverlays();
+      return;
+    }
+
+    if (msg.type === "agent_action_failed") {
+      ui.setAgentSummary({
+        stateText: "action failed",
+        stepText: msg.stepId || "—",
+        lastText: fmtAction(msg.action),
+      });
+      ui.pushAgentFeed(`FAILED ${msg.stepId}: ${fmtAction(msg.action)} — ${msg.error}`, "error");
+      return;
+    }
+
+    if (msg.type === "agent_question") {
+      state.lastQuestion = msg.question || "";
+      ui.setAgentSummary({
+        stateText: "question",
+        stepText: msg.stepId || "—",
+        lastText: msg.question || "—",
+      });
+      ui.pushAgentFeed(`QUESTION: ${msg.question || "—"}`, "warn");
+      if (ui.btnAsk) ui.btnAsk.disabled = !state.isAdmin;
+      return;
+    }
+
+    if (msg.type === "agent_elements") {
+      state.lastElements = msg.elements || [];
+      if (ui.renderOverlays) ui.renderOverlays();
+      return;
+    }
+
+    if (msg.type === "agent_screenshot_region") {
+      state.lastScreenshot = msg.img;
+      ui.pushAgentFeed(`SCREENSHOT ${msg.stepId}: ${msg.w}x${msg.h}`, "info");
+      if (ui.renderOverlays) ui.renderOverlays();
+      return;
+    }
+
+    // -------- Frame handling --------
+    if (msg.type === "frame") {
+      state.frames++;
+      state.lastFrameAt = Date.now();
+      state.lastFrameUrl = msg.url || state.lastFrameUrl;
+
+      if (msg.viewport) state.viewport = msg.viewport;
+      if (msg.img) ui.screenEl.src = msg.img;
+
+      if (ui.pageUrl) ui.pageUrl.textContent = (msg.url || "—").replace(/^https?:\/\//, "");
+
+      // FPS calc
+      state.fpsWindow.push(state.lastFrameAt);
+      const cutoff = state.lastFrameAt - CONFIG.FPS_WINDOW_MS;
+      state.fpsWindow = state.fpsWindow.filter((t) => t >= cutoff);
+      state.fps = state.fpsWindow.length / (CONFIG.FPS_WINDOW_MS / 1000);
+
+      ui.setError("");
+      ui.updateMetrics();
+      ui.updateStatusMenu();
+      ui.setSessionActive(true);
+
+      if (ui.renderOverlays) ui.renderOverlays();
+
+      onStatusChanged?.();
+      return;
+    }
+
+    // -------- Unknown message type --------
+    if (state.isAdmin) ui.adminLog(`WS: ${JSON.stringify(msg).slice(0, 400)}`);
+  },
+
+  send(obj) {
+    if (!state.ws || state.ws.readyState !== 1) {
+      ui.pushUserFeed("System: WS not open — start session or reconnect.", "warn");
+      return false;
+    }
+    state.ws.send(JSON.stringify(obj));
+    return true;
   }
-});
-
-// -------------------- Admin button / modal --------------------
-ui.adminBtn.onclick = () => {
-  if (state.isAdmin) return auth.logout();
-  auth.openModal();
 };
-
-ui.modalCancel.onclick = () => auth.closeModal();
-ui.modalLogin.onclick = () => auth.loginWithPassword(ui.adminPass.value);
-
-ui.adminPass.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") auth.loginWithPassword(ui.adminPass.value);
-});
-
-// -------------------- Boot logs --------------------
-ui.log(`Viewer loaded. origin=${location.origin}`);
-ui.log(`backend=${state.backendFqdn}`);
