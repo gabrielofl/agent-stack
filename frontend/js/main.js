@@ -88,6 +88,15 @@ function logLlmStatusToAdminConsole(s) {
   const chatMs = s.chat?.latencyMs ?? "?";
   const summary = s.summary ?? "";
 
+  // ✅ show request/response when available (debug=1)
+  if (s.chat?.request) {
+    ui.systemLog(`[LLM DEBUG] request: ${JSON.stringify(s.chat.request)}`, "info");
+  }
+  if (typeof s.chat?.responseText === "string") {
+    // could be big — slice if you want
+    ui.systemLog(`[LLM DEBUG] responseText: ${s.chat.responseText.slice(0, 2000)}`, "info");
+  }
+
   if (level === "ready") {
     const slowTag = s.chat?.slow ? " (slow)" : "";
     ui.systemLog(`✅ LLM READY${slowTag} | health=${healthMs}ms chat=${chatMs}ms | ${summary} | ${base}`, "ok");

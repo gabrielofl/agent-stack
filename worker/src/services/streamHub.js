@@ -1,5 +1,71 @@
 // src/services/streamHub.js
+// Improvements:
+// - Deduplicate identical payloads per session for a short TTL
+// - Rate-limit pushes per session to avoid event storms and memory/CPU spikes
+// - Cleanup dead sockets automatically on send failure
+// - Optional caps on viewers per session
+//
+// This is intentionally simple (no async queues) so it can't "pile up" memory.
+
 export const streams = new Map(); // sessionId -> Set<ws>
+
+// ---- tunables (env overridable) ----
+const DEDUPE_WINDOW_MS = Number(process.env.STREAM_DEDUPE_WINDOW_MS || 8000);
+const RATE_LIMIT_MAX = Number(process.env.STREAM_RATE_LIMIT_MAX || 40); // messages
+const RATE_LIMIT_WINDOW_MS = Number(process.env.STREAM_RATE_LIMIT_WINDOW_MS || 5000); // per session
+const MAX_CLIENTS_PER_SESSION = Number(process.env.STREAM_MAX_CLIENTS_PER_SESSION || 25);
+
+// sessionId -> { lastKey, lastAt, rlCount, rlWindowStart }
+const sessionState = new Map();
+
+function now() {
+  return Date.now();
+}
+
+function getState(sessionId) {
+  let st = sessionState.get(sessionId);
+  if (!st) {
+    st = { lastKey: "", lastAt: 0, rlCount: 0, rlWindowStart: 0 };
+    sessionState.set(sessionId, st);
+  }
+  return st;
+}
+
+function makeDedupeKey(msg) {
+  // Only dedupe for event-ish messages; proposed actions may repeat legitimately
+  // but your worker route already dedupes proposed actions.
+  // Here we dedupe everything by default; if you want to exempt types, do it here.
+  try {
+    // stable-ish key: type + status + message + stepId + action.type
+    const t = msg?.type || "";
+    const status = msg?.status || "";
+    const message = msg?.message || "";
+    const stepId = msg?.stepId || "";
+    const aType = msg?.action?.type || "";
+    const question = msg?.action?.question || "";
+    return `${t}|${status}|${stepId}|${aType}|${message}|${question}`;
+  } catch {
+    return String(msg?.type || "unknown");
+  }
+}
+
+function shouldDropByRateLimit(st) {
+  const t = now();
+  if (!st.rlWindowStart || t - st.rlWindowStart > RATE_LIMIT_WINDOW_MS) {
+    st.rlWindowStart = t;
+    st.rlCount = 0;
+  }
+  st.rlCount++;
+  return st.rlCount > RATE_LIMIT_MAX;
+}
+
+function pruneSessionStateIfNoStreams(sessionId) {
+  const set = streams.get(sessionId);
+  if (!set || set.size === 0) {
+    streams.delete(sessionId);
+    sessionState.delete(sessionId);
+  }
+}
 
 export function addStream(sessionId, ws) {
   let set = streams.get(sessionId);
@@ -7,29 +73,86 @@ export function addStream(sessionId, ws) {
     set = new Set();
     streams.set(sessionId, set);
   }
+
+  // Optional cap: drop extra viewers to prevent unbounded memory usage
+  if (set.size >= MAX_CLIENTS_PER_SESSION) {
+    try {
+      ws.close();
+    } catch {}
+    return;
+  }
+
   set.add(ws);
+
+  // Best-effort cleanup on close/error (if your ws lib emits these)
+  try {
+    ws.on?.("close", () => removeStream(sessionId, ws));
+    ws.on?.("error", () => removeStream(sessionId, ws));
+  } catch {
+    // ignore if ws.on is not available
+  }
 }
 
 export function removeStream(sessionId, ws) {
   const set = streams.get(sessionId);
   if (!set) return;
   set.delete(ws);
-  if (set.size === 0) streams.delete(sessionId);
+  if (set.size === 0) {
+    streams.delete(sessionId);
+    sessionState.delete(sessionId);
+  }
 }
 
 export function push(sessionId, msg) {
   const set = streams.get(sessionId);
-  if (!set) return;
+  if (!set || set.size === 0) return;
 
-  const payload = JSON.stringify(msg);
+  const st = getState(sessionId);
+
+  // Rate-limit: drop if session is spamming
+  if (shouldDropByRateLimit(st)) return;
+
+  // Dedupe identical event payloads within a time window
+  const key = makeDedupeKey(msg);
+  const t = now();
+  if (key && key === st.lastKey && t - st.lastAt < DEDUPE_WINDOW_MS) {
+    return;
+  }
+  st.lastKey = key;
+  st.lastAt = t;
+
+  // Important: stringify once
+  let payload;
+  try {
+    payload = JSON.stringify(msg);
+  } catch {
+    // If msg contains circulars or invalid stuff, don't crash the hub
+    payload = JSON.stringify({
+      type: "agent_event",
+      sessionId,
+      status: "error",
+      message: "streamHub: failed to serialize message",
+      ts: t,
+    });
+  }
+
+  // Send to all open sockets; remove dead ones
   for (const ws of set) {
-    // readyState 1 = OPEN
-    if (ws.readyState === 1) {
-      try {
-        ws.send(payload);
-      } catch {
-        // ignore per-client send errors
-      }
+    if (!ws) continue;
+
+    // readyState 1 = OPEN (ws)
+    if (ws.readyState !== 1) {
+      set.delete(ws);
+      continue;
+    }
+
+    try {
+      ws.send(payload);
+    } catch {
+      // remove broken sockets so the Set doesn't grow forever
+      set.delete(ws);
     }
   }
+
+  pruneSessionStateIfNoStreams(sessionId);
 }

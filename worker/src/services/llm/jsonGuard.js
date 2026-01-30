@@ -24,11 +24,15 @@ export function extractJsonObject(text) {
 
 export function safeJsonParse(text) {
   const direct = String(text ?? "").trim();
+
+  // quick sanity trim for huge outputs
+  const capped = direct.length > 50_000 ? direct.slice(0, 50_000) : direct;
+
   try {
-    return { ok: true, value: JSON.parse(direct) };
+    return { ok: true, value: JSON.parse(capped) };
   } catch {}
 
-  const extracted = extractJsonObject(direct);
+  const extracted = extractJsonObject(capped);
   if (!extracted) return { ok: false, error: "no_json_object_found" };
 
   try {

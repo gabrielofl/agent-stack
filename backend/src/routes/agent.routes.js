@@ -38,7 +38,7 @@ agentRouter.post("/agent/start", requireAdmin, async (req, res) => {
   // 2) probe LLM health ONCE (after worker start)
   let llmStatus;
   try {
-    const rr = await fetchFn(`${WORKER_HTTP}/health/llm`, { method: "GET" });
+    const rr = await fetchFn(`${WORKER_HTTP}/health/llm?debug=1`, { method: "GET" });
     const json = await rr.json().catch(async () => ({ raw: await rr.text() }));
     llmStatus = { ok: rr.ok, status: rr.status, ...json };
   } catch (e) {

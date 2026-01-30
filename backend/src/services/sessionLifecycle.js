@@ -1,4 +1,10 @@
-// src/services/sessionLifecycle.js (ESM)
+// src/services/sessionLifecycle.js  (BACKEND - where you trigger /agent/observe)
+// Fixes:
+// - Do NOT keep sending observations while the worker is busy / backoffing
+// - Add an inflight guard so you never have multiple /observe requests in flight
+// - Use a slightly lower frequency for element extraction (it’s expensive)
+// - Time out /observe fetch so a stuck worker doesn’t accumulate pending promises
+
 import WebSocket from "ws";
 import { chromium } from "playwright";
 
@@ -14,41 +20,28 @@ import {
 import { extractClickableElements, broadcastToViewers } from "./pageHelpers.js";
 import { ensureWorkerStream } from "./workerStream.js";
 
+function withTimeout(ms) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  return { controller, done: () => clearTimeout(t) };
+}
+
 export async function closeSession(sessionId) {
   const sess = sessions.get(sessionId);
   if (!sess) return;
 
-  // stop streaming interval
-  try {
-    clearInterval(sess.interval);
-  } catch {}
+  try { clearInterval(sess.interval); } catch {}
+  try { if (sess.workerReconnectTimer) clearTimeout(sess.workerReconnectTimer); } catch {}
+  try { if (sess.workerWs && sess.workerWs.readyState === WebSocket.OPEN) sess.workerWs.close(); } catch {}
 
-  // stop worker reconnect timer
-  try {
-    if (sess.workerReconnectTimer) clearTimeout(sess.workerReconnectTimer);
-  } catch {}
-
-  // close worker ws
-  try {
-    if (sess.workerWs && sess.workerWs.readyState === WebSocket.OPEN) sess.workerWs.close();
-  } catch {}
-
-  // close all client viewers
   try {
     for (const ws of sess.clients) {
-      try {
-        ws.close();
-      } catch {}
+      try { ws.close(); } catch {}
     }
   } catch {}
 
-  // close browser resources
-  try {
-    await sess.context?.close();
-  } catch {}
-  try {
-    await sess.browser?.close();
-  } catch {}
+  try { await sess.context?.close(); } catch {}
+  try { await sess.browser?.close(); } catch {}
 
   sessions.delete(sessionId);
 }
@@ -71,7 +64,6 @@ export async function createSession({ sessionId, startUrl }) {
 
   const clients = new Set();
 
-  // Store session before interval starts (so interval can find it safely)
   sessions.set(sessionId, {
     browser,
     context,
@@ -84,9 +76,13 @@ export async function createSession({ sessionId, startUrl }) {
     workerConnecting: null,
     workerReconnectTimer: null,
     workerBackoffMs: 500,
+
+    // NEW: observe pacing / backpressure
+    _observeInflight: false,
+    _observeCooldownUntil: 0,
+    _lastElementsAt: 0,
   });
 
-  // AUTO-START AGENT (MVP) — identical to your original behavior
   if (AUTO_START_AGENT) {
     const sess = sessions.get(sessionId);
     sess.agent = {
@@ -97,10 +93,8 @@ export async function createSession({ sessionId, startUrl }) {
       pendingApprovals: new Map(),
     };
 
-    // best effort: connect worker ws
     ensureWorkerStream(sessionId).catch(() => {});
 
-    // start worker session
     fetchFn(`${WORKER_HTTP}/agent/start`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -108,19 +102,28 @@ export async function createSession({ sessionId, startUrl }) {
     }).catch(() => {});
   }
 
-  // Stream screenshots at ~2 fps (and agent observations at 1Hz)
   const interval = setInterval(async () => {
     const sess = sessions.get(sessionId);
     if (!sess) return;
 
-    // Agent observation tick (small payload)
+    // Agent observation tick
     try {
       if (sess.agent?.running) {
         const now = Date.now();
-        if (!sess.agent.lastObsAt || now - sess.agent.lastObsAt > AGENT_OBS_MIN_INTERVAL_MS) {
+
+        // If we are cooling down due to worker slowness, skip
+        if (now < (sess._observeCooldownUntil || 0)) {
+          // still stream frames, just skip observe
+        } else if (!sess._observeInflight && (!sess.agent.lastObsAt || now - sess.agent.lastObsAt > AGENT_OBS_MIN_INTERVAL_MS)) {
           sess.agent.lastObsAt = now;
 
-          const elements = await extractClickableElements(page);
+          // Elements extraction is expensive; optionally cap it to e.g. >= 800ms
+          const minElemInterval = Math.max(800, Number(AGENT_OBS_MIN_INTERVAL_MS || 1000));
+          let elements = [];
+          if (!sess._lastElementsAt || now - sess._lastElementsAt > minElemInterval) {
+            sess._lastElementsAt = now;
+            elements = await extractClickableElements(page);
+          }
 
           broadcastToViewers(sess, {
             type: "agent_elements",
@@ -129,9 +132,14 @@ export async function createSession({ sessionId, startUrl }) {
             ts: now,
           });
 
+          // Mark inflight so we don't stack up observe requests
+          sess._observeInflight = true;
+
+          const { controller, done } = withTimeout(10_000); // if worker is overloaded, don't hang forever
           fetchFn(`${WORKER_HTTP}/agent/observe`, {
             method: "POST",
             headers: { "content-type": "application/json" },
+            signal: controller.signal,
             body: JSON.stringify({
               sessionId,
               obsId: `obs-${now}`,
@@ -140,14 +148,23 @@ export async function createSession({ sessionId, startUrl }) {
               elements,
               ts: now,
             }),
-          }).catch(() => {});
+          })
+            .catch(() => {
+              // if worker is timing out, cool down a bit so we don't keep hammering it
+              sess._observeCooldownUntil = Date.now() + 3000;
+            })
+            .finally(() => {
+              done();
+              sess._observeInflight = false;
+            });
         }
       }
     } catch {
       // ignore observe errors
+      sess._observeInflight = false;
     }
 
-    // Frame streaming tick
+    // Frame streaming tick (still every 500ms)
     try {
       const jpeg = await page.screenshot({ type: "jpeg", quality: 60 });
       const img = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
@@ -165,11 +182,10 @@ export async function createSession({ sessionId, startUrl }) {
         if (ws.readyState === WebSocket.OPEN) ws.send(payload);
       }
     } catch {
-      // ignore streaming errors (page might be navigating/closing)
+      // ignore streaming errors
     }
   }, 500);
 
   sessions.get(sessionId).interval = interval;
-
   return { viewport };
 }

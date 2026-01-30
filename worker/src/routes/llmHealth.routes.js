@@ -24,6 +24,9 @@ function levelFrom(result) {
 llmHealthRouter.get("/health/llm", async (req, res) => {
   const base = LLAMA_BASE_URL || "http://127.0.0.1:8080";
 
+  const debug = String(req.query?.debug || "").toLowerCase();
+  const debugOn = debug === "1" || debug === "true" || debug === "yes" || debug === "on";
+
   // thresholds to help you see "slow but working"
   const CHAT_SLOW_MS = 4000;
   const CHAT_TIMEOUT_MS = 8000;
@@ -32,7 +35,7 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
 
   const result = {
     ok: false,
-    level: "down",              // down | degraded | ready
+    level: "down", // down | degraded | ready
     summary: "",
     llamaBaseUrl: base,
     health: { ok: false, status: 0, latencyMs: null, error: null },
@@ -45,6 +48,11 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
       slow: false,
       sample: null,
       parsed: false,
+
+      // ✅ debug fields (only filled when debugOn)
+      request: null,
+      responseText: null,
+      responseJson: null,
     },
     ts: Date.now(),
   };
@@ -55,7 +63,11 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     const t = setTimeout(() => controller.abort(), timeoutMs);
     const t0 = baseNow();
     try {
-      const r = await fetchFn(url, { method: "GET", signal: controller.signal, headers: { "cache-control": "no-cache" } });
+      const r = await fetchFn(url, {
+        method: "GET",
+        signal: controller.signal,
+        headers: { "cache-control": "no-cache" },
+      });
       return { r, latencyMs: msSince(t0), aborted: false };
     } finally {
       clearTimeout(t);
@@ -74,7 +86,7 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
         signal: controller.signal,
         body: JSON.stringify(body),
       });
-      return { r, latencyMs: msSince(t0), aborted: false };
+      return { r, latencyMs: msSince(t0), aborted: false, requestBody: body };
     } finally {
       clearTimeout(t);
     }
@@ -101,7 +113,7 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     return res.status(200).json(result);
   }
 
-  // 2) /v1/models (quick deterministic OpenAI-surface check)
+  // 2) /v1/models
   try {
     const { r, latencyMs } = await getWithTimeout(`${base}/v1/models`, MODELS_TIMEOUT_MS);
     result.models.status = r.status;
@@ -116,28 +128,27 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
         const json = JSON.parse(text);
         const arr = Array.isArray(json?.data) ? json.data : null;
         result.models.count = arr ? arr.length : null;
-      } catch {
-        // models ok but unparsable — still ok enough
-      }
+      } catch {}
     }
   } catch (e) {
     result.models.error = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
   }
 
   // 3) /v1/chat/completions (responsiveness)
+  const chatBody = {
+    model: "local",
+    temperature: 0,
+    max_tokens: 16,
+    messages: [
+      { role: "system", content: "You are a healthcheck. Reply with a short answer." },
+      { role: "user", content: "ping" },
+    ],
+  };
+
   try {
-    const { r, latencyMs } = await postWithTimeout(
+    const { r, latencyMs, requestBody } = await postWithTimeout(
       `${base}/v1/chat/completions`,
-      {
-        model: "local",
-        temperature: 0,
-        max_tokens: 16,
-        messages: [
-          // Align more with your real usage (optional)
-          { role: "system", content: "You are a healthcheck. Reply with a short answer." },
-          { role: "user", content: "ping" },
-        ],
-      },
+      chatBody,
       CHAT_TIMEOUT_MS
     );
 
@@ -146,13 +157,25 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     result.chat.slow = latencyMs >= CHAT_SLOW_MS;
 
     const text = await safeText(r);
+
+    // ✅ include debug request/response (only when ?debug=1)
+    if (debugOn) {
+      result.chat.request = requestBody;
+      result.chat.responseText = text; // full raw response
+      // try parse; store if ok
+      try {
+        result.chat.responseJson = text ? JSON.parse(text) : null;
+      } catch {
+        result.chat.responseJson = null;
+      }
+    }
+
     if (!r.ok) {
       result.chat.error = `HTTP ${r.status}: ${text.slice(0, 120)}`;
     } else {
-      // We consider it responsive if HTTP 200, even if the model doesn't follow instructions
       result.chat.ok = true;
 
-      // Try to parse sample for debugging/UI
+      // existing "sample" logic kept
       try {
         const json = JSON.parse(text);
         const content = json?.choices?.[0]?.message?.content ?? "";
@@ -166,7 +189,6 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     result.chat.error = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
   }
 
-  // Final classification
   result.level = levelFrom(result);
   result.ok = result.level === "ready";
 
@@ -180,3 +202,4 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
 
   return res.status(200).json(result);
 });
+

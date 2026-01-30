@@ -34,30 +34,29 @@ export function validateAndNormalizeDecision(raw, ctx) {
   const H = Number(viewport.height || 720);
 
   const decision = typeof raw === "object" && raw ? raw : {};
-  const requiresApproval = false;
-
   const action = typeof decision.action === "object" && decision.action ? decision.action : null;
   if (!action) return { ok: false, error: "missing action object" };
 
   const type = String(action.type || "");
   if (!ALLOWED_TYPES.has(type)) return { ok: false, error: `unsupported action.type "${type}"` };
 
-  // ---- helpers for coords ----
-  const normXY = () => {
-  const xRaw = Number(action.x);
-  const yRaw = Number(action.y);
-  if (!Number.isFinite(xRaw) || !Number.isFinite(yRaw)) {
-    return { ok: false, error: "requires numeric x,y" };
-  }
-  const x = clamp(Math.round(xRaw), 0, W - 1);
-  const y = clamp(Math.round(yRaw), 0, H - 1);
-  return { ok: true, x, y };
-};
+  // only screenshot_region forces approval; everything else defaults false
+  const requiresApproval = type === "screenshot_region";
 
-  // ---- normalize ----
-	if (type === "click") {
-	const xy = normXY();
-	if (!xy.ok) return { ok: false, error: xy.error };
+  const normXY = () => {
+    const xRaw = Number(action.x);
+    const yRaw = Number(action.y);
+    if (!Number.isFinite(xRaw) || !Number.isFinite(yRaw)) {
+      return { ok: false, error: "requires numeric x,y" };
+    }
+    const x = clamp(Math.round(xRaw), 0, W - 1);
+    const y = clamp(Math.round(yRaw), 0, H - 1);
+    return { ok: true, x, y };
+  };
+
+  if (type === "click") {
+    const xy = normXY();
+    if (!xy.ok) return { ok: false, error: xy.error };
     const { x, y } = xy;
     const button = action.button === "right" ? "right" : "left";
     return { ok: true, decision: { requiresApproval, action: { type, x, y, button } } };
@@ -68,10 +67,10 @@ export function validateAndNormalizeDecision(raw, ctx) {
       const selector = safeStr(action.selector, 500).trim();
       if (!selector) return { ok: false, error: "hover.selector empty" };
       return { ok: true, decision: { requiresApproval, action: { type, selector } } };
-	}
-	const xy = normXY();
-	if (!xy.ok) return { ok: false, error: xy.error };
-	const { x, y } = xy;
+    }
+    const xy = normXY();
+    if (!xy.ok) return { ok: false, error: xy.error };
+    const { x, y } = xy;
     return { ok: true, decision: { requiresApproval, action: { type, x, y } } };
   }
 
@@ -109,7 +108,7 @@ export function validateAndNormalizeDecision(raw, ctx) {
   }
 
   if (type === "wait") {
-    const ms = clamp(Math.round(Number(action.ms ?? 500)), 0, 60000);
+    const ms = clamp(Math.round(Number(action.ms ?? 500)), 0, 60_000);
     return { ok: true, decision: { requiresApproval, action: { type, ms } } };
   }
 
@@ -126,9 +125,6 @@ export function validateAndNormalizeDecision(raw, ctx) {
   }
 
   if (type === "screenshot_region") {
-    // Force approval by default (safe), even if model tries to skip approval:
-    const forcedApproval = true;
-
     const x = clamp(Math.round(Number(action.x)), 0, W - 1);
     const y = clamp(Math.round(Number(action.y)), 0, H - 1);
     const w = clamp(Math.round(Number(action.w ?? 200)), 1, W - x);
@@ -141,7 +137,7 @@ export function validateAndNormalizeDecision(raw, ctx) {
     return {
       ok: true,
       decision: {
-        requiresApproval: forcedApproval,
+        requiresApproval: true,
         action: { type, x, y, w, h, format, ...(quality ? { quality } : {}) },
         explanation: "screenshot_region requires approval by policy",
       },
