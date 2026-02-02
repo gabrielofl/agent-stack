@@ -574,6 +574,8 @@ footer.footer{
 #tab-admin .kv {
   display: grid;
   gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 #tab-admin .kv > div {

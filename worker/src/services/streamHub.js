@@ -15,6 +15,14 @@ const RATE_LIMIT_MAX = Number(process.env.STREAM_RATE_LIMIT_MAX || 40); // messa
 const RATE_LIMIT_WINDOW_MS = Number(process.env.STREAM_RATE_LIMIT_WINDOW_MS || 5000); // per session
 const MAX_CLIENTS_PER_SESSION = Number(process.env.STREAM_MAX_CLIENTS_PER_SESSION || 25);
 
+// Optional: skip dedupe for these message types
+const DEDUPE_SKIP_TYPES = new Set(
+  String(process.env.STREAM_DEDUPE_SKIP_TYPES || "agent_proposed_action")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
 // sessionId -> { lastKey, lastAt, rlCount, rlWindowStart }
 const sessionState = new Map();
 
@@ -32,11 +40,8 @@ function getState(sessionId) {
 }
 
 function makeDedupeKey(msg) {
-  // Only dedupe for event-ish messages; proposed actions may repeat legitimately
-  // but your worker route already dedupes proposed actions.
-  // Here we dedupe everything by default; if you want to exempt types, do it here.
   try {
-    // stable-ish key: type + status + message + stepId + action.type
+    // stable-ish key: type + status + message + stepId + action.type + ask_user question
     const t = msg?.type || "";
     const status = msg?.status || "";
     const message = msg?.message || "";
@@ -59,7 +64,15 @@ function shouldDropByRateLimit(st) {
   return st.rlCount > RATE_LIMIT_MAX;
 }
 
-function pruneSessionStateIfNoStreams(sessionId) {
+function isWsOpen(ws) {
+  // ws (popular libs): readyState 1 = OPEN
+  // some libs expose WebSocket.OPEN (1)
+  const rs = ws?.readyState;
+  if (typeof rs !== "number") return true; // best-effort
+  return rs === 1;
+}
+
+function cleanupIfEmpty(sessionId) {
   const set = streams.get(sessionId);
   if (!set || set.size === 0) {
     streams.delete(sessionId);
@@ -77,7 +90,7 @@ export function addStream(sessionId, ws) {
   // Optional cap: drop extra viewers to prevent unbounded memory usage
   if (set.size >= MAX_CLIENTS_PER_SESSION) {
     try {
-      ws.close();
+      ws.close?.();
     } catch {}
     return;
   }
@@ -96,11 +109,9 @@ export function addStream(sessionId, ws) {
 export function removeStream(sessionId, ws) {
   const set = streams.get(sessionId);
   if (!set) return;
+
   set.delete(ws);
-  if (set.size === 0) {
-    streams.delete(sessionId);
-    sessionState.delete(sessionId);
-  }
+  cleanupIfEmpty(sessionId);
 }
 
 export function push(sessionId, msg) {
@@ -113,20 +124,23 @@ export function push(sessionId, msg) {
   if (shouldDropByRateLimit(st)) return;
 
   // Dedupe identical event payloads within a time window
-  const key = makeDedupeKey(msg);
+  const type = msg?.type || "";
   const t = now();
-  if (key && key === st.lastKey && t - st.lastAt < DEDUPE_WINDOW_MS) {
-    return;
-  }
-  st.lastKey = key;
-  st.lastAt = t;
 
-  // Important: stringify once
+  if (!DEDUPE_SKIP_TYPES.has(type)) {
+    const key = makeDedupeKey(msg);
+    if (key && key === st.lastKey && t - st.lastAt < DEDUPE_WINDOW_MS) {
+      return;
+    }
+    st.lastKey = key;
+    st.lastAt = t;
+  }
+
+  // stringify once
   let payload;
   try {
     payload = JSON.stringify(msg);
   } catch {
-    // If msg contains circulars or invalid stuff, don't crash the hub
     payload = JSON.stringify({
       type: "agent_event",
       sessionId,
@@ -140,8 +154,7 @@ export function push(sessionId, msg) {
   for (const ws of set) {
     if (!ws) continue;
 
-    // readyState 1 = OPEN (ws)
-    if (ws.readyState !== 1) {
+    if (!isWsOpen(ws)) {
       set.delete(ws);
       continue;
     }
@@ -149,10 +162,9 @@ export function push(sessionId, msg) {
     try {
       ws.send(payload);
     } catch {
-      // remove broken sockets so the Set doesn't grow forever
       set.delete(ws);
     }
   }
 
-  pruneSessionStateIfNoStreams(sessionId);
+  cleanupIfEmpty(sessionId);
 }

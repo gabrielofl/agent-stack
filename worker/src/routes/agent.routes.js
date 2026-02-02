@@ -1,15 +1,18 @@
 // src/routes/agent.routes.js  (WORKER - the one that owns AgentSession)
+//
 // Fixes:
 // - DO NOT setIdle() on ask_user (that nukes goal + causes weird behavior)
 // - Add "cooldown" + "inflight" guard so /observe can’t pile up requests
 // - Don’t push “Waiting for instructions…” on every observe tick (spam)
 // - Don’t emit proposed_action for "wait" (optional, but prevents pointless UI spam)
 // - De-dupe repeated identical proposed actions (esp. ask_user)
-// - Respect AgentSession.awaitingUser + backoff by trusting decideNextAction() return
+// - Trust AgentSession.awaitingUser + backoff by honoring decideNextAction() returns
+//
 import { Router } from "express";
 import { sessions } from "../services/agentStore.js";
 import { push } from "../services/streamHub.js";
-import { AgentSession } from "../agent/agentSession.js";
+import { AgentSession } from "../agent/agentSession.js"; // IMPORTANT: correct casing
+import { DBG, dlog } from "../services/debugLog.js";
 
 export const agentRouter = Router();
 
@@ -21,7 +24,8 @@ function now() {
 }
 
 function safeSlice(s, n) {
-  return String(s ?? "").length > n ? String(s ?? "").slice(0, n) : String(s ?? "");
+  const str = String(s ?? "");
+  return str.length > n ? str.slice(0, n) : str;
 }
 
 function actionKey(action) {
@@ -39,13 +43,16 @@ agentRouter.post("/agent/start", (req, res) => {
   const { sessionId, model } = req.body || {};
   if (!sessionId) return res.status(400).json({ error: "missing sessionId" });
 
+  if (DBG.agent) dlog(sessionId, "ROUTE_START", { model });
+
   const sess = new AgentSession({ sessionId, goal: "", model });
+
   // route-level guards
   sess._route = {
-    deciding: false,            // inflight /observe decide
-    lastDecisionAt: 0,          // throttle calls to decideNextAction
-    lastIdleEventAt: 0,         // throttle “waiting…” events
-    lastProposedKey: "",        // dedupe identical actions
+    deciding: false, // inflight /observe decide
+    lastDecisionAt: 0, // throttle calls to decideNextAction
+    lastIdleEventAt: 0, // throttle “waiting…” events
+    lastProposedKey: "", // dedupe identical actions
     lastProposedAt: 0,
   };
 
@@ -68,12 +75,27 @@ agentRouter.post("/agent/start", (req, res) => {
 agentRouter.post("/agent/instruction", (req, res) => {
   const { sessionId, text } = req.body || {};
   const sess = sessions.get(sessionId);
+
   if (!sess) return res.status(404).json({ error: "no agent session (call /agent/start)" });
   if (!text || !String(text).trim()) return res.status(400).json({ error: "missing text" });
 
+  if (DBG.agent) {
+    dlog(sessionId, "ROUTE_INSTRUCTION", {
+      text: safeSlice(text, 200),
+      model: sess.model,
+    });
+  }
+
   sess.setInstruction(String(text).trim());
+
   if (!sess._route) {
-    sess._route = { deciding: false, lastDecisionAt: 0, lastIdleEventAt: 0, lastProposedKey: "", lastProposedAt: 0 };
+    sess._route = {
+      deciding: false,
+      lastDecisionAt: 0,
+      lastIdleEventAt: 0,
+      lastProposedKey: "",
+      lastProposedAt: 0,
+    };
   }
 
   push(sessionId, {
@@ -96,25 +118,42 @@ agentRouter.post("/agent/instruction", (req, res) => {
 agentRouter.post("/agent/observe", async (req, res) => {
   const { sessionId, obsId, url, viewport, elements, ts } = req.body || {};
   const sess = sessions.get(sessionId);
+
   if (!sess) return res.status(404).json({ error: "no agent session (call /agent/start)" });
 
   sess.setObservation({ obsId, url, viewport, elements, ts });
 
+  if (DBG.agent) {
+    dlog(sessionId, "ROUTE_OBSERVE", {
+      obsId,
+      url,
+      elementsCount: Array.isArray(elements) ? elements.length : 0,
+      status: sess.status,
+    });
+  }
+
   if (!sess._route) {
-    sess._route = { deciding: false, lastDecisionAt: 0, lastIdleEventAt: 0, lastProposedKey: "", lastProposedAt: 0 };
+    sess._route = {
+      deciding: false,
+      lastDecisionAt: 0,
+      lastIdleEventAt: 0,
+      lastProposedKey: "",
+      lastProposedAt: 0,
+    };
   }
 
   // 1) If idle, DO NOT keep pushing idle events every tick
   if (sess.status === "idle") {
-    const n = now();
-    if (n - sess._route.lastIdleEventAt > 15_000) {
-      sess._route.lastIdleEventAt = n;
+    if (DBG.agent) dlog(sessionId, "OBS_SKIP_IDLE", {});
+    const t = now();
+    if (t - sess._route.lastIdleEventAt > 15_000) {
+      sess._route.lastIdleEventAt = t;
       push(sessionId, {
         type: "agent_event",
         sessionId,
         status: "idle",
         message: "Waiting for instructions…",
-        ts: n,
+        ts: t,
       });
     }
     return res.json({ ok: true });
@@ -122,20 +161,38 @@ agentRouter.post("/agent/observe", async (req, res) => {
 
   // 2) If done, do nothing
   if (sess.status === "done") {
+    if (DBG.agent) dlog(sessionId, "OBS_SKIP_DONE", {});
     return res.json({ ok: true });
   }
 
-  // 3) Throttle /observe-driven decisions + prevent piling up concurrent decides
-  const n = now();
-  if (sess._route.deciding) return res.json({ ok: true });
-  if (n - sess._route.lastDecisionAt < OBS_DECISION_MIN_INTERVAL_MS) return res.json({ ok: true });
+  // 3) Throttle /observe-driven decisions + prevent concurrent decides
+  const t = now();
+
+  if (sess._route.deciding) {
+    if (DBG.agent) dlog(sessionId, "OBS_SKIP_INFLIGHT", {});
+    return res.json({ ok: true });
+  }
+
+  if (t - sess._route.lastDecisionAt < OBS_DECISION_MIN_INTERVAL_MS) {
+    if (DBG.agent) dlog(sessionId, "OBS_SKIP_THROTTLED", { sinceMs: t - sess._route.lastDecisionAt });
+    return res.json({ ok: true });
+  }
 
   sess._route.deciding = true;
-  sess._route.lastDecisionAt = n;
+  sess._route.lastDecisionAt = t;
 
   try {
     const decision = await sess.decideNextAction();
     const stepId = `step-${++sess.step}`;
+
+    if (DBG.agent) {
+      dlog(sessionId, "DECIDE_RESULT", {
+        done: !!decision?.done,
+        type: decision?.action?.type || null,
+        requiresApproval: !!decision?.requiresApproval,
+        explanation: safeSlice(decision?.explanation || "", 200),
+      });
+    }
 
     // DONE -> go idle once
     if (decision?.done) {
@@ -150,14 +207,16 @@ agentRouter.post("/agent/observe", async (req, res) => {
       return res.json({ ok: true });
     }
 
-    // Optional: do not spam UI with "wait" actions — they're internal pacing
+    // Do not spam UI with internal pacing waits
     if (decision?.action?.type === "wait") {
+      if (DBG.agent) dlog(sessionId, "DECIDE_RETURN_WAIT", decision.action);
       return res.json({ ok: true });
     }
 
     // De-dupe identical proposed actions for a short window
     const key = actionKey(decision.action);
     if (key === sess._route.lastProposedKey && now() - sess._route.lastProposedAt < 10_000) {
+      if (DBG.agent) dlog(sessionId, "PROPOSED_DEDUPED", { withinMs: now() - sess._route.lastProposedAt });
       return res.json({ ok: true });
     }
     sess._route.lastProposedKey = key;
@@ -173,7 +232,7 @@ agentRouter.post("/agent/observe", async (req, res) => {
     });
 
     // If the action is ask_user, DO NOT setIdle().
-    // AgentSession now sets awaitingUser internally and will return wait until user responds.
+    // AgentSession sets awaitingUser internally and will return wait until user responds.
     if (decision?.action?.type === "ask_user") {
       push(sessionId, {
         type: "agent_event",
@@ -184,7 +243,7 @@ agentRouter.post("/agent/observe", async (req, res) => {
       });
     }
 
-    if (decision.requiresApproval) {
+    if (decision?.requiresApproval) {
       push(sessionId, {
         type: "agent_action_needs_approval",
         sessionId,

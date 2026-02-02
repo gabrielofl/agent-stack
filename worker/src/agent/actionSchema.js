@@ -28,6 +28,15 @@ function isHttpUrl(url) {
   return /^https?:\/\//i.test(url);
 }
 
+/**
+ * Convert to a clamped integer, falling back to a default when NaN/Infinity/etc.
+ */
+function safeInt(value, def, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return clamp(def, min, max);
+  return clamp(Math.round(n), min, max);
+}
+
 export function validateAndNormalizeDecision(raw, ctx) {
   const viewport = ctx?.viewport || { width: 1280, height: 720 };
   const W = Number(viewport.width || 1280);
@@ -95,8 +104,12 @@ export function validateAndNormalizeDecision(raw, ctx) {
 
     if (action.value != null) out.value = safeStr(action.value, 500);
     else if (action.label != null) out.label = safeStr(action.label, 500);
-    else if (action.index != null) out.index = clamp(Math.round(Number(action.index)), 0, 200);
-    else return { ok: false, error: "select requires value|label|index" };
+    else if (action.index != null) {
+      // FIX: avoid NaN index
+      out.index = safeInt(action.index, 0, 0, 200);
+    } else {
+      return { ok: false, error: "select requires value|label|index" };
+    }
 
     return { ok: true, decision: { requiresApproval, action: out } };
   }
@@ -108,13 +121,15 @@ export function validateAndNormalizeDecision(raw, ctx) {
   }
 
   if (type === "wait") {
-    const ms = clamp(Math.round(Number(action.ms ?? 500)), 0, 60_000);
+    // FIX: avoid NaN ms
+    const ms = safeInt(action.ms ?? 500, 500, 0, 60_000);
     return { ok: true, decision: { requiresApproval, action: { type, ms } } };
   }
 
   if (type === "scroll") {
-    const dx = clamp(Math.round(Number(action.dx ?? 0)), -2000, 2000);
-    const dy = clamp(Math.round(Number(action.dy ?? 500)), -4000, 4000);
+    // FIX: avoid NaN dx/dy
+    const dx = safeInt(action.dx ?? 0, 0, -2000, 2000);
+    const dy = safeInt(action.dy ?? 500, 500, -4000, 4000);
     return { ok: true, decision: { requiresApproval, action: { type, dx, dy } } };
   }
 
@@ -125,20 +140,28 @@ export function validateAndNormalizeDecision(raw, ctx) {
   }
 
   if (type === "screenshot_region") {
-    const x = clamp(Math.round(Number(action.x)), 0, W - 1);
-    const y = clamp(Math.round(Number(action.y)), 0, H - 1);
-    const w = clamp(Math.round(Number(action.w ?? 200)), 1, W - x);
-    const h = clamp(Math.round(Number(action.h ?? 200)), 1, H - y);
+    // FIX: validate numbers; avoid NaN -> NaN propagation
+    const x = safeInt(action.x, 0, 0, W - 1);
+    const y = safeInt(action.y, 0, 0, H - 1);
+
+    // w/h depend on x/y, so clamp after computing remaining bounds
+    const maxW = Math.max(1, W - x);
+    const maxH = Math.max(1, H - y);
+
+    const w = safeInt(action.w ?? 200, 200, 1, maxW);
+    const h = safeInt(action.h ?? 200, 200, 1, maxH);
 
     const format = action.format === "jpeg" ? "jpeg" : "png";
     const quality =
-      format === "jpeg" ? clamp(Math.round(Number(action.quality ?? 70)), 1, 100) : undefined;
+      format === "jpeg"
+        ? safeInt(action.quality ?? 70, 70, 1, 100)
+        : undefined;
 
     return {
       ok: true,
       decision: {
         requiresApproval: true,
-        action: { type, x, y, w, h, format, ...(quality ? { quality } : {}) },
+        action: { type, x, y, w, h, format, ...(format === "jpeg" ? { quality } : {}) },
         explanation: "screenshot_region requires approval by policy",
       },
     };

@@ -30,11 +30,16 @@ export const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 90000);
 export const MAX_ELEMENTS = Number(process.env.MAX_ELEMENTS || 40);
 export const MAX_TEXT_LEN = Number(process.env.MAX_TEXT_LEN || 800);
 
-// New (optional) guardrails / knobs
-// bump default fast timeout to 30 seconds (Fix 6)
-export const LLM_FAST_TIMEOUT_MS = Number(process.env.LLM_FAST_TIMEOUT_MS || 30000);
+// --------------------
+// LLM knobs
+// --------------------
 
-export const LLM_REPAIR_TIMEOUT_MS = Number(process.env.LLM_REPAIR_TIMEOUT_MS || 15000);
+// Primary “fast” timeout: bump to 30 seconds by default
+export const LLM_FAST_TIMEOUT_MS = Number(process.env.LLM_FAST_TIMEOUT_MS || 90000);
+
+// Repair timeout: bump to 30 seconds by default (Fix for your log)
+export const LLM_REPAIR_TIMEOUT_MS = Number(process.env.LLM_REPAIR_TIMEOUT_MS || 90000);
+
 export const LLM_MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS || 320);
 export const LLM_REPAIR_MAX_TOKENS = Number(process.env.LLM_REPAIR_MAX_TOKENS || 220);
 
@@ -51,8 +56,7 @@ export const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 30 * 60 * 100
 //   .trim()
 //   .toLowerCase();
 export const AGENT_PROMPT_MODE = "constrained";
-
-// Optional per-mode overrides (apply regardless of mode, but you’ll usually set them alongside AGENT_PROMPT_MODE)
+// Optional mode overrides
 export const AGENT_PROMPT_MAX_TOKENS = Number(process.env.AGENT_PROMPT_MAX_TOKENS || 0);
 export const AGENT_PROMPT_TIMEOUT_MS = Number(process.env.AGENT_PROMPT_TIMEOUT_MS || 0);
 export const AGENT_PROMPT_MAX_ELEMENTS = Number(process.env.AGENT_PROMPT_MAX_ELEMENTS || 0);
@@ -78,7 +82,7 @@ export const DEBUG_SESSIONS = String(process.env.DEBUG_SESSIONS ?? (IS_PROD ? ""
 export const DEBUG_TRUNC = Number(process.env.DEBUG_TRUNC ?? (IS_PROD ? 900 : 2500));
 
 // --------------------
-// Optional: centralize other tunables you were using via process.env
+// Other tunables
 // --------------------
 export const OBS_DECISION_MIN_INTERVAL_MS = Number(process.env.OBS_DECISION_MIN_INTERVAL_MS || 1200);
 

@@ -17,8 +17,8 @@ COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
 
 VOLUME ["/models"]
-ENV MODEL_PATH=/models/tinyllama-1.1b-chat-v1.0.Q2_K.gguf
-ENV CTX_SIZE=1024
+ENV MODEL_PATH=/models/Phi-3-mini-4k-instruct-q4.gguf
+ENV CTX_SIZE=2048
 
 EXPOSE 4000
 ENTRYPOINT ["/app/start.sh"]
