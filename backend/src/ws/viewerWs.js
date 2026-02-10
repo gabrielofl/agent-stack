@@ -8,6 +8,7 @@ import { WORKER_HTTP, ADMIN_TOKEN } from "../config/env.js";
 import { ensureWorkerStream } from "../services/workerStream.js";
 import { executeAgentAction } from "../services/pageHelpers.js";
 import { closeSession } from "../services/sessionLifecycle.js";
+import { getCachedLlmStatus } from "../services/llmStatusCache.js";
 
 // Lightweight WS admin auth (for agent_start / agent_correction over WS)
 function isWsAdmin(msg) {
@@ -32,6 +33,21 @@ export function attachViewerWs(server) {
     sess.clients.add(ws);
 
     ws.send(JSON.stringify({ type: "hello", sessionId, message: "Connected. Streaming frames." }));
+
+	      // Send cached LLM status immediately (admin will log it in ws.js)
+    const snap = getCachedLlmStatus();
+    if (snap?.payload) {
+      try {
+        ws.send(JSON.stringify({
+          type: "llm_status",
+          sessionId,
+          level: snap.level,
+          payload: snap.payload,
+          ts: snap.ts,
+          cached: true,
+        }));
+      } catch {}
+    }
 
     ws.on("message", async (data) => {
       let msg;

@@ -144,43 +144,6 @@ async function postAdminJson(path, body) {
   }
 }
 
-function logLlmStatusToAdminConsole(s) {
-  if (!s) {
-    ui.systemLog("[LLM] No llmStatus returned from /worker/start", "warn");
-    return;
-  }
-
-  const level = s.level || (s.ok ? "ready" : "degraded");
-  const base = s.llamaBaseUrl ?? "";
-  const healthMs = s.health?.latencyMs ?? "?";
-  const chatMs = s.chat?.latencyMs ?? "?";
-  const summary = s.summary ?? "";
-
-  // ✅ show request/response when available (debug=1)
-  if (s.chat?.request) {
-    ui.systemLog(`[LLM DEBUG] request: ${JSON.stringify(s.chat.request)}`, "info");
-  }
-  if (typeof s.chat?.responseText === "string") {
-    // could be big — slice if you want
-    ui.systemLog(`[LLM DEBUG] responseText: ${s.chat.responseText.slice(0, 2000)}`, "info");
-  }
-
-  if (level === "ready") {
-    const slowTag = s.chat?.slow ? " (slow)" : "";
-    ui.systemLog(`✅ LLM READY${slowTag} | health=${healthMs}ms chat=${chatMs}ms | ${summary} | ${base}`, "ok");
-    return;
-  }
-
-  if (level === "degraded") {
-    const err = s.chat?.error || s.models?.error || s.health?.error || s.error || "unknown";
-    ui.systemLog(`⚠️ LLM DEGRADED | ${summary} | err=${err} | base=${base}`, "warn");
-    return;
-  }
-
-  const err = s.health?.error || s.error || "unknown";
-  ui.systemLog(`❌ LLM DOWN | ${summary} | err=${err} | base=${base}`, "error");
-}
-
 function setLlmPillFromStatus(llmStatus) {
   if (!pillLlm || !llmStatus) return;
   const level = llmStatus.level || (llmStatus.ok ? "ready" : "down");
@@ -196,9 +159,9 @@ async function startAgentIdle(sessionId) {
 	// Use the official API method you already have
 	const out = await api.startAgent(sessionId, "default");
 
-// ✅ log once to admin console
-	logLlmStatusToAdminConsole(out?.llmStatus);
+
 	setLlmPillFromStatus(out?.llmStatus);
+	ui.systemLog(`LLM: ${out?.llmStatus?.level || (out?.llmStatus?.ok ? "ready" : "degraded")}`);
 
   return;
 }

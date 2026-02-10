@@ -100,7 +100,42 @@ export const wsClient = {
       return;
     }
 
-    // -------- Agent / worker events --------
+	  // -------- Agent / worker events --------
+	     // -------- LLM status push (from backend) --------
+    if (msg.type === "llm_status") {
+      if (!state.isAdmin) return;
+
+      const lvl = msg.level || msg.payload?.llmStatus?.level || "unknown";
+      const p = msg.payload || {};
+      const llm = p.llmStatus || null;
+      const bootStatus = p.bootStatus || null;
+      const bootLog = p.bootLog || "";
+      const ms = p.ms ?? "?";
+
+      ui.adminLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, "info");
+      ui.adminLog(`[LLM STATUS PUSH] level=${lvl} ms=${ms} session=${msg.sessionId || "?"}`, lvl === "ready" ? "info" : "warn");
+
+      if (p.workerStart) {
+        ui.adminLog(`[WORKER START] ${JSON.stringify(p.workerStart).slice(0, 4000)}`, "info");
+      }
+
+      if (bootStatus) {
+        ui.adminLog(`[LLM BOOT STATUS] ${JSON.stringify(bootStatus).slice(0, 8000)}`, lvl === "ready" ? "info" : "warn");
+      }
+
+      if (llm) {
+        ui.adminLog(`[LLM PROBE /health/llm] ${JSON.stringify(llm).slice(0, 8000)}`, llm.ok ? "info" : "warn");
+      } else {
+        ui.adminLog(`[LLM PROBE /health/llm] missing llmStatus`, "warn");
+      }
+
+      if (bootLog) {
+        ui.adminLog(`[LLM BOOT LOG]\n${String(bootLog).slice(0, 12000)}`, "warn");
+      }
+
+      return;
+    }
+
     if (msg.type === "agent_event") {
       const line = msg.error ? `[worker] ${msg.error}` :
                    msg.status ? `[worker] ${msg.status}` :

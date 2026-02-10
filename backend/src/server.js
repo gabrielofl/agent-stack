@@ -2,13 +2,14 @@
 import http from "http";
 import { createApp } from "./app.js";
 import { attachViewerWs } from "./ws/viewerWs.js";
+import { startLlmStatusPolling } from "./services/llmStatusCache.js";
 
 export function createServer() {
   const app = createApp();
   const server = http.createServer(app);
 
-  // WS viewer stream on /ws
   attachViewerWs(server);
+  startLlmStatusPolling();
 
   return server;
 }

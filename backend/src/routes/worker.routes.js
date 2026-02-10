@@ -1,4 +1,4 @@
-// src/routes/agent.routes.js (ESM)
+// src/routes/worker.routes.js (ESM)
 import { Router } from "express";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 import { sessions } from "../services/sessionStore.js";
@@ -6,8 +6,180 @@ import { fetchFn } from "../services/fetch.js";
 import { WORKER_HTTP } from "../config/env.js";
 import { ensureWorkerStream } from "../services/workerStream.js";
 import { executeAgentAction } from "../services/pageHelpers.js";
+import { broadcastToSession } from "../services/frontendBroadcast.js";
 
 export const workerRouter = Router();
+
+workerRouter.post("/worker/start", requireAdmin, async (req, res) => {
+  const startedAt = Date.now();
+  const { sessionId, model } = req.body || {};
+
+  if (!sessionId || !sessions.has(sessionId)) {
+    return res.status(400).json({ ok: false, error: "bad_sessionId" });
+  }
+
+  const sess = sessions.get(sessionId);
+
+  // Ensure worker WS is up (non-fatal)
+  try { await ensureWorkerStream(sessionId); } catch {}
+
+  // --- helper: safe fetch json/text ---
+  async function safeJson(url) {
+    try {
+      const r = await fetchFn(url, { method: "GET" });
+      const text = await r.text();
+      try { return { ok: r.ok, status: r.status, json: JSON.parse(text) }; }
+      catch { return { ok: r.ok, status: r.status, json: null, raw: text }; }
+    } catch (e) {
+      return { ok: false, status: 0, error: String(e?.message || e) };
+    }
+  }
+
+  async function safeText(url) {
+    try {
+      const r = await fetchFn(url, { method: "GET" });
+      const text = await r.text();
+      return { ok: r.ok, status: r.status, text };
+    } catch (e) {
+      return { ok: false, status: 0, text: "", error: String(e?.message || e) };
+    }
+  }
+
+  // 1) create/ensure worker agent session (IDLE)
+  let workerStart = { ok: false, status: 0, raw: "" };
+  try {
+    const r = await fetchFn(`${WORKER_HTTP}/agent/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, model: model || "default" }),
+    });
+    const raw = await r.text();
+    workerStart = { ok: r.ok, status: r.status, raw: raw.slice(0, 600) };
+
+    if (!r.ok) {
+      // even if agent/start failed, try to pull boot signals to show WHY
+      const bootStatus = await safeJson(`${WORKER_HTTP}/debug/llm/status`);
+      const bootLog = await safeText(`${WORKER_HTTP}/debug/llm/log?lines=250`);
+
+      const payload = {
+        ok: false,
+        error: "worker_start_failed",
+        workerStart,
+        llmStatus: null,
+        bootStatus: bootStatus.json ?? bootStatus.raw ?? bootStatus,
+        bootLog: bootLog.text || "",
+        ms: Date.now() - startedAt,
+      };
+
+      // push to frontend admin panel via WS
+      broadcastToSession(sessionId, {
+        type: "llm_status",
+        sessionId,
+        level: "down",
+        reason: "worker_start_failed",
+        payload,
+        ts: Date.now(),
+      });
+
+      return res.status(502).json(payload);
+    }
+  } catch (e) {
+    const payload = {
+      ok: false,
+      error: "worker_unreachable",
+      detail: String(e?.message || e),
+      workerStart,
+      llmStatus: null,
+      bootStatus: null,
+      bootLog: "",
+      ms: Date.now() - startedAt,
+    };
+
+    broadcastToSession(sessionId, {
+      type: "llm_status",
+      sessionId,
+      level: "down",
+      reason: "worker_unreachable",
+      payload,
+      ts: Date.now(),
+    });
+
+    return res.status(502).json(payload);
+  }
+
+  // 2) probe LLM health ONCE (after worker start)
+  let llmStatus = null;
+  try {
+    const rr = await fetchFn(`${WORKER_HTTP}/health/llm?debug=1`, { method: "GET" });
+    const text = await rr.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch {}
+
+    // keep your structure stable
+    llmStatus = json
+      ? { ok: rr.ok, status: rr.status, ...json }
+      : { ok: rr.ok, status: rr.status, raw: text.slice(0, 2000) };
+  } catch (e) {
+    llmStatus = {
+      ok: false,
+      status: 0,
+      error: "llm_probe_failed",
+      detail: String(e?.message || e),
+    };
+  }
+
+  // 3) Pull boot status/log from worker (explicit and best for debugging)
+  const bootStatusRes = await safeJson(`${WORKER_HTTP}/debug/llm/status`);
+  const bootStatus = bootStatusRes.json ?? bootStatusRes.raw ?? bootStatusRes;
+
+  // Always pull a short log tail if you want “maximum explicit”
+  // If you prefer only-on-failure, wrap in `if (!llmStatus?.ok) { ... }`
+  const bootLogRes = !llmStatus?.ok
+    ? await safeText(`${WORKER_HTTP}/debug/llm/log?lines=350`)
+    : { ok: true, status: 200, text: "" };
+
+  const bootLog = bootLogRes.text || "";
+
+  // 4) mark backend agent as idle
+  sess.agent = {
+    running: false,
+    goal: "",
+    model: model || "default",
+    lastObsAt: 0,
+    pendingApprovals: new Map(),
+  };
+
+  const ms = Date.now() - startedAt;
+
+  const responsePayload = {
+    ok: true,
+    status: "idle",
+    ms,
+    workerStart,
+    llmStatus,
+    bootStatus,
+    bootLog, // only non-empty if degraded in this version
+  };
+
+	broadcastToSession(sessionId, {
+  type: "agent_event",
+  sessionId,
+  status: "llm_probe_complete",
+  message: llmStatus?.ok ? "LLM probe: ready" : "LLM probe: degraded",
+  ts: Date.now(),
+});
+
+  // 5) push to frontend admin panel via WS (this is your “most explicit” path)
+  broadcastToSession(sessionId, {
+    type: "llm_status",
+    sessionId,
+    level: llmStatus?.ok ? "ready" : "degraded",
+    payload: responsePayload,
+    ts: Date.now(),
+  });
+
+  return res.json(responsePayload);
+});
 
 workerRouter.get("/worker/health", async (req, res) => {
   try {
@@ -30,62 +202,6 @@ workerRouter.get("/worker/llm", async (req, res) => {
     res.status(502).json({ ok: false, error: "llm_unreachable", detail: String(e?.message || e) });
   }
 });
-
-// ---- Agent control ----
-// src/routes/agent.routes.js
-// backend: src/routes/agent.routes.js (ESM)
-workerRouter.post("/worker/start", requireAdmin, async (req, res) => {
-  const { sessionId, model } = req.body || {};
-  if (!sessionId || !sessions.has(sessionId)) {
-    return res.status(400).json({ error: "bad sessionId" });
-  }
-
-  const sess = sessions.get(sessionId);
-
-  // ensure worker WS is up (ok if this fails)
-  try { await ensureWorkerStream(sessionId); } catch {}
-
-  // 1) create/ensure worker agent session (IDLE)
-  const r = await fetchFn(`${WORKER_HTTP}/agent/start`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId, model: model || "default" }),
-  });
-
-  const out = await r.text();
-  if (!r.ok) {
-    return res.status(500).json({ error: "worker start failed", detail: out.slice(0, 200) });
-  }
-
-  // 2) probe LLM health ONCE (after worker start)
-  let llmStatus;
-  try {
-    const rr = await fetchFn(`${WORKER_HTTP}/health/llm?debug=1`, { method: "GET" });
-    const json = await rr.json().catch(async () => ({ raw: await rr.text() }));
-    llmStatus = { ok: rr.ok, status: rr.status, ...json };
-  } catch (e) {
-    llmStatus = { ok: false, status: 0, error: "llm_probe_failed", detail: String(e?.message || e) };
-  }
-
-  // 3) mark backend agent as idle
-  sess.agent = {
-    running: false,
-    goal: "",
-    model: model || "default",
-    lastObsAt: 0,
-    pendingApprovals: new Map(),
-  };
-
-  // ✅ RETURN IT so frontend can log it once
-  return res.json({
-    ok: true,
-    status: "idle",
-    llmStatus, // ✅
-  });
-});
-
-
-// backend: src/routes/agent.routes.js (ESM)
 
 workerRouter.post("/worker/instruction", requireAdmin, async (req, res) => {
   const { sessionId, text, model } = req.body || {};
