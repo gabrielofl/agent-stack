@@ -31,6 +31,19 @@ function wsScheme() {
   return location.protocol === "https:" ? "wss" : "ws";
 }
 
+function safeStringify(obj, maxLen = 8000) {
+  let s = "";
+  try { s = JSON.stringify(obj); }
+  catch { s = String(obj); }
+  return s.length > maxLen ? s.slice(0, maxLen) + "…(truncated)" : s;
+}
+
+function asText(v, maxLen = 12000) {
+  if (v == null) return "";
+  const s = typeof v === "string" ? v : safeStringify(v, maxLen);
+  return s.length > maxLen ? s.slice(0, maxLen) + "…(truncated)" : s;
+}
+
 export const wsClient = {
   wsUrl: "",
 
@@ -52,29 +65,28 @@ export const wsClient = {
     onStatusChanged?.();
 
     state.ws.onopen = () => {
-	state.wsReconnectAttempt = 0;
-	state.lastWs = "open";
-	ui.systemLog("WS open");
-	ui.updateStatusMenu();
-	onStatusChanged?.();
-	};
+      state.wsReconnectAttempt = 0;
+      state.lastWs = "open";
+      ui.systemLog("WS open");
+      ui.updateStatusMenu();
+      onStatusChanged?.();
+    };
 
-	state.ws.onclose = () => {
-	state.lastWs = "closed";
-	ui.systemLog("WS closed", "warn");
-	ui.updateStatusMenu();
-	onStatusChanged?.();
-	this.scheduleReconnect(onStatusChanged);
-	};
+    state.ws.onclose = () => {
+      state.lastWs = "closed";
+      ui.systemLog("WS closed", "warn");
+      ui.updateStatusMenu();
+      onStatusChanged?.();
+      this.scheduleReconnect(onStatusChanged);
+    };
 
-	state.ws.onerror = () => {
-	state.lastWs = "error";
-	ui.setError("ws error");
-	ui.systemLog("WS error (check DevTools → Network → WS)", "error");
-	ui.updateStatusMenu();
-	onStatusChanged?.();
-	};
-
+    state.ws.onerror = () => {
+      state.lastWs = "error";
+      ui.setError("ws error");
+      ui.systemLog("WS error (check DevTools → Network → WS)", "error");
+      ui.updateStatusMenu();
+      onStatusChanged?.();
+    };
 
     state.ws.onmessage = (ev) => this.onMessage(ev, onStatusChanged);
   },
@@ -100,8 +112,7 @@ export const wsClient = {
       return;
     }
 
-	  // -------- Agent / worker events --------
-	     // -------- LLM status push (from backend) --------
+    // -------- LLM status push (from backend) --------
     if (msg.type === "llm_status") {
       if (!state.isAdmin) return;
 
@@ -113,18 +124,72 @@ export const wsClient = {
       const ms = p.ms ?? "?";
 
       ui.adminLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, "info");
-      ui.adminLog(`[LLM STATUS PUSH] level=${lvl} ms=${ms} session=${msg.sessionId || "?"}`, lvl === "ready" ? "info" : "warn");
+      ui.adminLog(
+        `[LLM STATUS PUSH] level=${lvl} ms=${ms} session=${msg.sessionId || "?"}`,
+        lvl === "ready" ? "info" : "warn"
+      );
 
       if (p.workerStart) {
-        ui.adminLog(`[WORKER START] ${JSON.stringify(p.workerStart).slice(0, 4000)}`, "info");
+        ui.adminLog(`[WORKER START] ${safeStringify(p.workerStart, 4000)}`, "info");
       }
 
       if (bootStatus) {
-        ui.adminLog(`[LLM BOOT STATUS] ${JSON.stringify(bootStatus).slice(0, 8000)}`, lvl === "ready" ? "info" : "warn");
+        ui.adminLog(
+          `[LLM BOOT STATUS] ${safeStringify(bootStatus, 8000)}`,
+          lvl === "ready" ? "info" : "warn"
+        );
       }
 
       if (llm) {
-        ui.adminLog(`[LLM PROBE /health/llm] ${JSON.stringify(llm).slice(0, 8000)}`, llm.ok ? "info" : "warn");
+        ui.adminLog(
+          `[LLM PROBE /health/llm] ${safeStringify(llm, 8000)}`,
+          llm.ok ? "info" : "warn"
+        );
+
+        // ✅ NEW: log the actual chat response (sample + raw responseText + errors)
+        const chat = llm.chat || null;
+
+        if (chat) {
+          const chatOk = !!chat.ok;
+          const chatStatus = chat.status ?? "?";
+          const chatLatency = chat.latencyMs ?? "?";
+          const slow = chat.slow ? "yes" : "no";
+
+          ui.adminLog(
+            `[LLM CHAT] ok=${chatOk} status=${chatStatus} latencyMs=${chatLatency} slow=${slow}`,
+            chatOk ? "info" : "warn"
+          );
+
+          // sample is short parsed content
+          if (chat.sample) {
+            ui.adminLog(
+              `[LLM CHAT SAMPLE] ${asText(chat.sample, 4000)}`,
+              chatOk ? "info" : "warn"
+            );
+          }
+
+          // responseText is the full raw body text returned by /v1/chat/completions (trimmed by backend)
+          if (chat.responseText) {
+            ui.adminLog(
+              `[LLM CHAT RESPONSE TEXT]\n${asText(chat.responseText, 12000)}`,
+              chatOk ? "info" : "warn"
+            );
+          } else if (chat.responseJson) {
+            ui.adminLog(
+              `[LLM CHAT RESPONSE JSON]\n${asText(chat.responseJson, 12000)}`,
+              chatOk ? "info" : "warn"
+            );
+          }
+
+          if (chat.error) {
+            ui.adminLog(
+              `[LLM CHAT ERROR] ${asText(chat.error, 8000)}`,
+              "warn"
+            );
+          }
+        } else {
+          ui.adminLog(`[LLM CHAT] missing llm.chat in llmStatus`, "warn");
+        }
       } else {
         ui.adminLog(`[LLM PROBE /health/llm] missing llmStatus`, "warn");
       }
@@ -136,10 +201,11 @@ export const wsClient = {
       return;
     }
 
+    // -------- Agent / worker events --------
     if (msg.type === "agent_event") {
       const line = msg.error ? `[worker] ${msg.error}` :
-                   msg.status ? `[worker] ${msg.status}` :
-                   `[worker] ${JSON.stringify(msg).slice(0, 400)}`;
+        msg.status ? `[worker] ${msg.status}` :
+          `[worker] ${JSON.stringify(msg).slice(0, 400)}`;
       ui.pushAgentFeed(line, msg.error ? "error" : "info");
       return;
     }

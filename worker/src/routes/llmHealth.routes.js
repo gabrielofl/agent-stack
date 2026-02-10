@@ -5,13 +5,63 @@ import { LLAMA_BASE_URL } from "../config/env.js";
 
 export const llmHealthRouter = Router();
 
-const baseNow = () =>
-  globalThis.performance?.now ? performance.now() : Date.now();
+// ---------------- SSE broadcast (frontend admin console) ----------------
+const sseClients = new Set();
 
-const msSince = (t0) =>
-  Math.round(
-    (globalThis.performance?.now ? performance.now() : Date.now()) - t0
-  );
+function sseHeaders(res) {
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  // If behind nginx, this helps prevent buffering:
+  res.setHeader("X-Accel-Buffering", "no");
+  // Some proxies like an initial flush:
+  res.flushHeaders?.();
+}
+
+function sseSend(res, eventName, data) {
+  // SSE format: event:<name>\ndata:<json>\n\n
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function broadcast(eventName, data) {
+  for (const res of sseClients) {
+    try {
+      sseSend(res, eventName, data);
+    } catch {
+      // ignore broken clients
+    }
+  }
+}
+
+llmHealthRouter.get("/health/llm/stream", (req, res) => {
+  sseHeaders(res);
+
+  // Acknowledge connection
+  sseSend(res, "connected", { ok: true, ts: Date.now() });
+
+  sseClients.add(res);
+
+  req.on("close", () => {
+    sseClients.delete(res);
+  });
+
+  // Keep-alive ping every 25s (prevents idle disconnects)
+  const ping = setInterval(() => {
+    if (!res.writableEnded) {
+      try {
+        res.write(`: ping ${Date.now()}\n\n`);
+      } catch {}
+    }
+  }, 25000);
+
+  req.on("close", () => clearInterval(ping));
+});
+
+// ---------------- utilities ----------------
+const baseNow = () => (globalThis.performance?.now ? performance.now() : Date.now());
+const msSince = (t0) => Math.round((globalThis.performance?.now ? performance.now() : Date.now()) - t0);
 
 async function safeText(r) {
   try {
@@ -21,32 +71,72 @@ async function safeText(r) {
   }
 }
 
+function trim(s, n = 2000) {
+  const str = typeof s === "string" ? s : s == null ? "" : String(s);
+  return str.length > n ? str.slice(0, n) + `…(trimmed ${str.length - n})` : str;
+}
+
+function serializeCause(cause) {
+  if (!cause) return null;
+  if (typeof cause === "string") return { message: cause };
+  if (cause instanceof Error) {
+    return {
+      name: cause.name,
+      message: cause.message,
+      code: cause.code,
+      errno: cause.errno,
+      syscall: cause.syscall,
+      address: cause.address,
+      port: cause.port,
+      stack: trim(cause.stack, 1200),
+    };
+  }
+  // unknown object
+  try {
+    return JSON.parse(JSON.stringify(cause));
+  } catch {
+    return { message: String(cause) };
+  }
+}
+
+function serializeError(e) {
+  if (!e) return { message: "unknown_error" };
+  if (typeof e === "string") return { message: e };
+
+  // Node fetch often throws TypeError("fetch failed") with e.cause containing the real reason
+  return {
+    name: e.name,
+    message: e.message,
+    code: e.code,
+    stack: trim(e.stack, 1200),
+    cause: serializeCause(e.cause),
+  };
+}
+
 function levelFrom(result) {
-  // Down if llama not reachable
   if (!result.health.ok) return "down";
-  // Degraded if models or chat fail
   if (!result.models.ok) return "degraded";
   if (!result.chat.ok) return "degraded";
-  // Ready if everything ok
   return "ready";
 }
 
 llmHealthRouter.get("/health/llm", async (req, res) => {
-  const base = LLAMA_BASE_URL || "http://127.0.0.1:8080";
+  const base = (LLAMA_BASE_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
 
   const debug = String(req.query?.debug || "").toLowerCase();
-  const debugOn =
-    debug === "1" || debug === "true" || debug === "yes" || debug === "on";
+  const debugOn = debug === "1" || debug === "true" || debug === "yes" || debug === "on";
 
-  // thresholds to help you see "slow but working"
+  // You can also force broadcasting via ?broadcast=1 (optional)
+  const broadcastQ = String(req.query?.broadcast || "").toLowerCase();
+  const broadcastOn = broadcastQ === "1" || broadcastQ === "true" || broadcastQ === "yes" || broadcastQ === "on";
+
   const CHAT_SLOW_MS = 4000;
   const CHAT_TIMEOUT_MS = 8000;
   const MODELS_TIMEOUT_MS = 2000;
-  const HEALTH_TIMEOUT_MS = 1500;
 
   const result = {
     ok: false,
-    level: "down", // down | degraded | ready
+    level: "down",
     summary: "",
     llamaBaseUrl: base,
     health: { ok: false, status: 0, latencyMs: null, error: null },
@@ -59,8 +149,6 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
       slow: false,
       sample: null,
       parsed: false,
-
-      // debug fields (only filled when debugOn)
       request: null,
       responseText: null,
       responseJson: null,
@@ -68,7 +156,6 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     ts: Date.now(),
   };
 
-  // helper: GET with timeout
   async function getWithTimeout(url, timeoutMs) {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -85,7 +172,6 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     }
   }
 
-  // helper: POST with timeout
   async function postWithTimeout(url, body, timeoutMs) {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -93,10 +179,7 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     try {
       const r = await fetchFn(url, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "cache-control": "no-cache",
-        },
+        headers: { "content-type": "application/json", "cache-control": "no-cache" },
         signal: controller.signal,
         body: JSON.stringify(body),
       });
@@ -106,100 +189,127 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     }
   }
 
-  // 1) Reachability probe (robust): try /health, then fall back
-  async function probeAny(paths, timeoutMs) {
-    let lastErr = null;
-
-    for (const p of paths) {
-      const url = `${base}${p}`;
-      try {
-        const { r, latencyMs } = await getWithTimeout(url, timeoutMs);
-        const text = await safeText(r);
-
-        if (r.ok) {
-          return { ok: true, status: r.status, latencyMs, url, text };
-        }
-
-        // responded but non-2xx
-        lastErr = `HTTP ${r.status}: ${text.slice(0, 120)}`;
-      } catch (e) {
-        lastErr = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
-      }
+  // Prefer /v1/models as "reachability + readiness" probe
+  async function probe(url, timeoutMs) {
+    try {
+      const { r, latencyMs } = await getWithTimeout(url, timeoutMs);
+      const text = await safeText(r);
+      return { ok: true, httpOk: r.ok, status: r.status, latencyMs, text };
+    } catch (e) {
+      const err = serializeError(e);
+      const isAbort = e?.name === "AbortError";
+      return { ok: false, error: isAbort ? { message: "timeout" } : err };
     }
-
-    return { ok: false, status: 0, latencyMs: null, url: null, error: lastErr };
   }
 
-  const healthProbe = await probeAny(
-    ["/health", "/v1/models", "/", "/v1"],
-    HEALTH_TIMEOUT_MS
-  );
+  const modelsProbe = await probe(`${base}/v1/models`, MODELS_TIMEOUT_MS);
 
-  if (!healthProbe.ok) {
-    result.health.error = healthProbe.error || "unreachable";
-    result.level = levelFrom(result);
+  // If we cannot even connect -> truly down/unreachable
+  if (!modelsProbe.ok) {
+    result.health.error = modelsProbe.error || { message: "fetch_failed" };
     result.summary = "llama unreachable";
+    result.level = levelFrom(result);
+
+    // Broadcast a concise event so you see the real error in frontend console.
+    const event = {
+      type: "llm_health",
+      ts: result.ts,
+      llamaBaseUrl: base,
+      level: result.level,
+      ok: result.ok,
+      summary: result.summary,
+      models: null,
+      chat: null,
+      error: result.health.error,
+    };
+
+    // Always broadcast if there are SSE clients OR if broadcastOn/debugOn
+    if (sseClients.size > 0 || broadcastOn || debugOn) {
+      broadcast("llm_health", event);
+    }
+
+    console.log("[LLM_HEALTH]", JSON.stringify(event));
     return res.status(200).json(result);
   }
 
+  // Connection exists (we got an HTTP status back)
   result.health.ok = true;
-  result.health.status = healthProbe.status || 200;
-  result.health.latencyMs = healthProbe.latencyMs;
-  result.health.error = null;
+  result.health.status = modelsProbe.status;
+  result.health.latencyMs = modelsProbe.latencyMs;
 
-  if (debugOn) {
-    // extra debug signal, harmless for your backend consumer
-    result.health.probeUrl = healthProbe.url;
-  }
+  // If /v1/models returns 503, llama is up but still loading
+  if (modelsProbe.status === 503) {
+    result.models.ok = false;
+    result.models.status = 503;
+    result.models.latencyMs = modelsProbe.latencyMs;
+    result.models.error = "HTTP 503 (server loading model)";
+    result.summary = "LLM loading (llama up, model not ready yet)";
+    result.level = "degraded";
+    result.ok = false;
 
-  // 2) /v1/models (also used to pick a working model id)
-  let modelId = "local"; // fallback for older setups
-  try {
-    const { r, latencyMs } = await getWithTimeout(
-      `${base}/v1/models`,
-      MODELS_TIMEOUT_MS
-    );
-
-    result.models.status = r.status;
-    result.models.latencyMs = latencyMs;
-
-    const text = await safeText(r);
-    if (!r.ok) {
-      result.models.error = `HTTP ${r.status}: ${text.slice(0, 120)}`;
-    } else {
-      result.models.ok = true;
-      try {
-        const json = JSON.parse(text);
-        const arr = Array.isArray(json?.data) ? json.data : null;
-        result.models.count = arr ? arr.length : null;
-
-        const firstId = arr?.[0]?.id;
-        if (typeof firstId === "string" && firstId) {
-          modelId = firstId;
-        }
-      } catch {
-        // leave models.ok true but no count/modelId improvement
-      }
+    if (debugOn) {
+      result.models.responseText = trim(modelsProbe.text, 2000);
     }
-  } catch (e) {
-    result.models.error = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
+
+    const event = {
+      type: "llm_health",
+      ts: result.ts,
+      llamaBaseUrl: base,
+      level: result.level,
+      ok: result.ok,
+      summary: result.summary,
+      models: {
+        status: result.models.status,
+        latencyMs: result.models.latencyMs,
+        error: result.models.error,
+        responseText: debugOn ? result.models.responseText : undefined,
+      },
+      chat: null,
+    };
+
+    if (sseClients.size > 0 || broadcastOn || debugOn) {
+      broadcast("llm_health", event);
+    }
+
+    console.log("[LLM_HEALTH]", JSON.stringify(event));
+    return res.status(200).json(result);
+  }
+
+  // Parse /v1/models if it succeeded
+  let modelId = "local";
+  if (!modelsProbe.httpOk) {
+    result.models.status = modelsProbe.status;
+    result.models.latencyMs = modelsProbe.latencyMs;
+    result.models.error = `HTTP ${modelsProbe.status}: ${trim(modelsProbe.text, 200)}`;
+  } else {
+    result.models.ok = true;
+    result.models.status = modelsProbe.status;
+    result.models.latencyMs = modelsProbe.latencyMs;
+
+    try {
+      const json = JSON.parse(modelsProbe.text || "{}");
+      const arr = Array.isArray(json?.data) ? json.data : null;
+      result.models.count = arr ? arr.length : null;
+
+      const firstId = arr?.[0]?.id;
+      if (typeof firstId === "string" && firstId) modelId = firstId;
+    } catch {
+      // keep models.ok true; count stays null
+    }
   }
 
   if (debugOn) {
-    // expose which model we attempted, helpful for diagnosing "local" mismatch
     result.models.modelId = modelId;
+    result.models.responseText = trim(modelsProbe.text, 2000);
   }
 
-  // 3) /v1/chat/completions (responsiveness)
+  // ---- Chat probe ----
   const chatBody = {
     model: modelId,
     temperature: 0,
     max_tokens: 16,
     messages: [
-      {
-        role: "system",
-        content: "You are a healthcheck. Reply with a short answer.",
-      },
+      { role: "system", content: "You are a healthcheck. Reply with a short answer." },
       { role: "user", content: "ping" },
     ],
   };
@@ -217,32 +327,37 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
 
     const text = await safeText(r);
 
+    // IMPORTANT: keep this even when debug is off, so we can broadcast it
+    result.chat.responseText = trim(text, 4000);
+
+    // Parse JSON if possible
+    let parsedJson = null;
+    try {
+      parsedJson = text ? JSON.parse(text) : null;
+    } catch {
+      parsedJson = null;
+    }
+
     if (debugOn) {
       result.chat.request = requestBody;
-      result.chat.responseText = text;
-      try {
-        result.chat.responseJson = text ? JSON.parse(text) : null;
-      } catch {
-        result.chat.responseJson = null;
-      }
+      result.chat.responseJson = parsedJson;
     }
 
     if (!r.ok) {
-      result.chat.error = `HTTP ${r.status}: ${text.slice(0, 120)}`;
+      result.chat.error = `HTTP ${r.status}: ${trim(text, 300)}`;
     } else {
       result.chat.ok = true;
-
-      try {
-        const json = JSON.parse(text);
-        const content = json?.choices?.[0]?.message?.content ?? "";
-        result.chat.sample = String(content).slice(0, 80) || null;
+      if (parsedJson) {
+        const content = parsedJson?.choices?.[0]?.message?.content ?? "";
+        result.chat.sample = String(content).slice(0, 200) || null;
         result.chat.parsed = true;
-      } catch {
-        result.chat.sample = text.slice(0, 80) || null;
+      } else {
+        result.chat.sample = result.chat.responseText.slice(0, 200) || null;
       }
     }
   } catch (e) {
-    result.chat.error = e?.name === "AbortError" ? "timeout" : String(e?.message || e);
+    const err = serializeError(e);
+    result.chat.error = e?.name === "AbortError" ? "timeout" : err;
   }
 
   result.level = levelFrom(result);
@@ -255,6 +370,42 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
   } else {
     result.summary = "LLM down";
   }
+
+  // ---------------- broadcast to frontend admin console ----------------
+  const event = {
+    type: "llm_health",
+    ts: result.ts,
+    llamaBaseUrl: base,
+    level: result.level,
+    ok: result.ok,
+    summary: result.summary,
+    models: {
+      ok: result.models.ok,
+      status: result.models.status,
+      latencyMs: result.models.latencyMs,
+      count: result.models.count,
+      modelId: debugOn ? result.models.modelId : undefined,
+    },
+    chat: {
+      ok: result.chat.ok,
+      status: result.chat.status,
+      latencyMs: result.chat.latencyMs,
+      slow: result.chat.slow,
+      sample: result.chat.sample,
+      // Always include responseText (trimmed) so you can see the real LLM output in the frontend console
+      responseText: result.chat.responseText,
+      error: result.chat.error,
+      // Only include request/JSON when debug=1
+      request: debugOn ? result.chat.request : undefined,
+      responseJson: debugOn ? result.chat.responseJson : undefined,
+    },
+  };
+
+  if (sseClients.size > 0 || broadcastOn || debugOn) {
+    broadcast("llm_health", event);
+  }
+
+  console.log("[LLM_HEALTH]", JSON.stringify(event));
 
   return res.status(200).json(result);
 });
