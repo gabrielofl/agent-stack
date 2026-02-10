@@ -37,6 +37,11 @@ function safeSlice(s, n) {
   return str.length > n ? `${str.slice(0, n)}…(trunc ${str.length} chars)` : str;
 }
 
+function safeStr(s, maxLen) {
+  const t = String(s ?? "");
+  return t.length > maxLen ? t.slice(0, maxLen) : t;
+}
+
 /**
  * chatCompletion
  * - per-call timeout override (timeoutMs)
@@ -53,6 +58,7 @@ export async function chatCompletion({
   meta = {},
 }) {
   const sessionId = meta?.sessionId;
+  const stepId = meta?.stepId;
 
   const timeout = Number(timeoutMs || LLM_TIMEOUT_MS);
   const userPrompt = String(prompt || "").slice(0, 20_000);
@@ -61,11 +67,14 @@ export async function chatCompletion({
     model: "local",
     temperature,
     max_tokens: Math.max(8, Math.min(2048, Number(maxTokens || 320))),
+    // Hard stop at newline so the model cannot emit multiple steps.
+    // (Works with llama.cpp OpenAI-compatible endpoints.)
+    stop: ["\n"],
     messages: [
       {
         role: "system",
         content:
-          "You are a precise browser automation agent. Output exactly one line. No markdown. No commentary. No extra keys.",
+          "You are a precise browser automation agent. Output exactly one line. No markdown. No commentary. Do not output the URL. Start with a command like CLICK/SCROLL/TYPE/SELECT/WAIT/GOTO.",
       },
       { role: "user", content: userPrompt },
     ],
@@ -88,7 +97,6 @@ export async function chatCompletion({
       approxPromptTokens: approxTokens(userPrompt),
     });
 
-    // Only dump big stuff if explicitly enabled
     if (DBG.llmBody) dlogBig(sessionId, "LLM_REQ_BODY", JSON.stringify(body));
     else if (DBG.llmPrompt) dlogBig(sessionId, "LLM_PROMPT", userPrompt);
   }
@@ -113,8 +121,6 @@ export async function chatCompletion({
         meta,
       });
 
-      // Don’t always print the entire raw HTTP text; it can be huge/noisy.
-      // Only print full if DEBUG_LLM_BODY is on; otherwise print a snippet.
       if (DBG.llmBody) {
         dlogBig(sessionId, "LLM_RAW_HTTP_TEXT", text);
       } else {
@@ -123,25 +129,35 @@ export async function chatCompletion({
     }
 
     if (!r.ok) {
-      // Try to extract structured error message if any
       const parsedErr = safeJsonParse(text);
       const detail =
         parsedErr.ok
-          ? safeSlice(parsedErr.value?.error?.message || parsedErr.value?.message || text, 500)
+          ? safeSlice(
+              parsedErr.value?.error?.message || parsedErr.value?.message || text,
+              500
+            )
           : safeSlice(text, 500);
 
-      throw new Error(`model-server ${r.status}: ${detail}`);
+      throw new Error(`llama-server ${r.status}: ${detail}`);
     }
 
     const parsed = safeJsonParse(text);
     if (!parsed.ok) {
-      throw new Error(`model-server returned non-JSON response: ${safeSlice(text, 500)}`);
+      throw new Error(`llama-server returned non-JSON response: ${safeSlice(text, 500)}`);
     }
 
     const content = parsed.value?.choices?.[0]?.message?.content ?? "";
 
+    // --- ALWAYS PRINT RAW ASSISTANT CONTENT WITH A SEARCHABLE MARKER ---
+    // This is intentionally console.log so you can grep it easily in any environment.
+    // Keep it concise in case something weird happens.
+    console.log(
+      `@@LLM_ASSISTANT_RAW@@ sessionId=${sessionId ?? "?"} stepId=${stepId ?? "?"} mode=${
+        meta?.mode ?? "?"
+      }\n${safeStr(content, 4000)}\n@@END_LLM_ASSISTANT_RAW@@`
+    );
+
     if (DBG.llm) {
-      // This is the model’s final “assistant message content”
       dlogBig(sessionId, "LLM_CONTENT", content);
     }
 
@@ -150,7 +166,7 @@ export async function chatCompletion({
     const latencyMs = msSince(t0);
 
     if (String(e?.name) === "AbortError") {
-      const err = new Error(`model-server timeout after ${timeout}ms`);
+      const err = new Error(`llama-server timeout after ${timeout}ms`);
       if (DBG.llm) dlog(sessionId, "LLM_TIMEOUT", { latencyMs, timeoutMs: timeout, meta });
       throw err;
     }

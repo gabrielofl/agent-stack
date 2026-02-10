@@ -47,6 +47,104 @@ function tokenize(line) {
   return out;
 }
 
+const COMMANDS = new Set([
+  "CLICK",
+  "HOVER",
+  "HOVERSEL",
+  "TYPE",
+  "TYPESEL",
+  "SELECT",
+  "PRESS",
+  "SCROLL",
+  "WAIT",
+  "GOTO",
+  "SCREENSHOT",
+  "SHOT",
+  "SNAP",
+  "DONE",
+  "ASK",
+]);
+
+function stripBulletPrefix(line) {
+  let s = String(line || "").trim();
+  // remove common bullets: "-", "*", "•"
+  s = s.replace(/^[-*•]+\s*/g, "");
+  // remove numeric bullets: "1." "2)" etc.
+  s = s.replace(/^\d+[\.\)]\s*/g, "");
+  // remove "Action:" / "Output:" prefixes
+  s = s.replace(/^(action|output|next action)\s*:\s*/i, "");
+  // remove wrapping quotes
+  s = s.replace(/^["'`]+|["'`]+$/g, "");
+  return s.trim();
+}
+
+/**
+ * Extract the first valid command line from raw model text.
+ * Returns null if none found (so we can apply deterministic fallback instead of WAIT/backoff).
+ */
+function extractFirstCommandLine(rawText) {
+  const lines = String(rawText || "")
+    .split("\n")
+    .map((l) => stripBulletPrefix(l))
+    .filter(Boolean);
+
+  // 1) Line begins with valid command
+  for (let line of lines) {
+    const toks = tokenize(line);
+    const cmd = String(toks[0] || "").toUpperCase();
+    if (COMMANDS.has(cmd)) return line.replace(/\r?\n/g, " ").trim();
+  }
+
+  // 2) Recovery: command appears later in text (rare)
+  const upper = String(rawText || "").toUpperCase();
+  for (const cmd of COMMANDS) {
+    const idx = upper.indexOf(cmd);
+    if (idx >= 0) {
+      const slice = stripBulletPrefix(String(rawText).slice(idx));
+      const firstLine = slice.split("\n")[0] || "";
+      const toks = tokenize(firstLine);
+      const firstCmd = String(toks[0] || "").toUpperCase();
+      if (COMMANDS.has(firstCmd)) return firstLine.replace(/\r?\n/g, " ").trim();
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Build a deterministic fallback ONE-LINE command.
+ * Prefer clicking a Settings/Menu-ish element if present, otherwise ASK.
+ */
+function buildFallbackCommandLine(goal, elements) {
+  const g = String(goal || "").toLowerCase();
+  const els = Array.isArray(elements) ? elements : [];
+
+  const findByLabel = (re) => {
+    for (let i = 0; i < els.length; i++) {
+      const label = normLabel(els[i]);
+      if (label && re.test(label)) return i + 1; // elementNumber is 1-based
+    }
+    return null;
+  };
+
+  // Language tasks: almost always Settings first
+  if (g.includes("language")) {
+    const n =
+      findByLabel(/instellingen|settings|param[eè]tres|configuraci[oó]n|taal|language/i) ??
+      findByLabel(/account|profile|profiel/i) ??
+      findByLabel(/menu|hamburger|navigation|navigatie/i);
+    if (n != null) return `CLICK ${n}`;
+  }
+
+  // Generic: menu/settings
+  const n =
+    findByLabel(/menu|hamburger|navigation|navigatie/i) ??
+    findByLabel(/instellingen|settings|param[eè]tres|configuraci[oó]n/i);
+  if (n != null) return `CLICK ${n}`;
+
+  return `ASK Which on-screen element should I use next?`;
+}
+
 function parseMs(token, unit) {
   const n = Number(token);
   if (!Number.isFinite(n)) return null;
@@ -59,32 +157,15 @@ function parseMs(token, unit) {
 
 /**
  * Deterministic conversion from model output -> decision object with schema-compatible action.
- *
- * Preferred one-line commands (ONE LINE ONLY):
- * - CLICK <elementNumber>
- * - CLICK <x> <y> [RIGHT]
- * - HOVER <elementNumber>
- * - HOVER <x> <y>
- * - HOVERSEL <selector>
- * - TYPE <text...>
- * - TYPESEL <selector> <text...> [CLEAR]
- * - SELECT <selector> (VALUE|LABEL|INDEX) <value...>
- * - PRESS <key>
- * - SCROLL <dx> <dy>
- * - WAIT <ms>   (or WAIT 2 s)
- * - GOTO <http(s)://url>
- * - SCREENSHOT <x> <y> <w> <h> [PNG|JPEG] [QUALITY <1-100>]
- * - DONE <message...>
- * - ASK <question...>
- *
- * Also supports a few loose legacy patterns as fallback.
+ * This now ONLY attempts parsing if we can extract a valid command line.
  */
 function parseFreeformToDecision(freeformRaw, ctx) {
   const rawText = String(freeformRaw || "").trim();
   if (!rawText) return null;
 
-  // Use only the first non-empty line (model sometimes returns extra lines)
-  const text = rawText.split("\n").map((l) => l.trim()).find(Boolean) || "";
+  // Must find a valid command line; otherwise return null and let caller fallback deterministically.
+  const text = extractFirstCommandLine(rawText);
+  if (!text) return null;
 
   const elements = Array.isArray(ctx?.elements) ? ctx.elements : [];
   const viewport = ctx?.viewport || { width: 1280, height: 720 };
@@ -122,7 +203,6 @@ function parseFreeformToDecision(freeformRaw, ctx) {
 
   const mk = (action, explanation) => ({
     done: false,
-    // validateAndNormalizeDecision will re-derive requiresApproval; keep it correct anyway
     requiresApproval: action?.type === "screenshot_region",
     action,
     explanation: safeStr(explanation || "", 400),
@@ -135,26 +215,22 @@ function parseFreeformToDecision(freeformRaw, ctx) {
   if (toks.length) {
     const cmd = String(toks[0] || "").toUpperCase();
 
-    // DONE ...
     if (cmd === "DONE") {
       const msg = toks.slice(1).join(" ").trim() || "Done.";
       return { done: true, message: safeStr(msg, 400) };
     }
 
-    // ASK ...
     if (cmd === "ASK") {
       const q = toks.slice(1).join(" ").trim() || "What should I do next?";
       return mk({ type: "ask_user", question: safeStr(q, 400) }, "Asking user for input.");
     }
 
-    // GOTO url
     if (cmd === "GOTO") {
       const url = (toks[1] || "").trim();
       if (!url) return null;
       return mk({ type: "goto", url }, `Navigating to ${url}.`);
     }
 
-    // WAIT <ms> or WAIT <n> <unit>
     if (cmd === "WAIT") {
       if (!toks[1]) return null;
       let ms = null;
@@ -164,7 +240,6 @@ function parseFreeformToDecision(freeformRaw, ctx) {
       return mk({ type: "wait", ms }, "Waiting briefly.");
     }
 
-    // SCROLL dx dy
     if (cmd === "SCROLL") {
       const dx = Number(toks[1]);
       const dy = Number(toks[2]);
@@ -172,21 +247,17 @@ function parseFreeformToDecision(freeformRaw, ctx) {
       return mk({ type: "scroll", dx, dy }, `Scrolling by (${dx}, ${dy}).`);
     }
 
-    // PRESS key
     if (cmd === "PRESS") {
       const key = (toks[1] || "").trim();
       if (!key) return null;
       return mk({ type: "press_key", key }, `Pressing ${key}.`);
     }
 
-    // TYPE <text...>
     if (cmd === "TYPE") {
       const payload = toks.slice(1).join(" ").trim();
       return mk({ type: "type", text: safeStr(payload, 2000) }, "Typing text.");
     }
 
-    // TYPESEL <selector> <text...> [CLEAR]
-    // (aliases)
     if (cmd === "TYPESEL" || cmd === "TYPE_IN_SELECTOR" || cmd === "TYPEIN") {
       const selector = (toks[1] || "").trim();
       if (!selector) return null;
@@ -194,7 +265,6 @@ function parseFreeformToDecision(freeformRaw, ctx) {
       let clearFirst = false;
       let rest = toks.slice(2);
 
-      // Support trailing CLEAR
       if (rest.length && String(rest[rest.length - 1]).toUpperCase() === "CLEAR") {
         clearFirst = true;
         rest = rest.slice(0, -1);
@@ -207,7 +277,6 @@ function parseFreeformToDecision(freeformRaw, ctx) {
       );
     }
 
-    // SELECT <selector> (VALUE|LABEL|INDEX) <value...>
     if (cmd === "SELECT") {
       const selector = (toks[1] || "").trim();
       const kind = String(toks[2] || "").toUpperCase();
@@ -216,50 +285,44 @@ function parseFreeformToDecision(freeformRaw, ctx) {
       if (kind === "INDEX") {
         const idx = toks[3];
         if (idx == null) return null;
-        return mk(
-          { type: "select", selector, index: Number(idx) },
-          `Selecting index ${idx} in ${selector}.`
-        );
+        return mk({ type: "select", selector, index: Number(idx) }, `Selecting index ${idx} in ${selector}.`);
       }
 
       if (kind === "VALUE") {
         const value = toks.slice(3).join(" ").trim();
         if (!value) return null;
-        return mk(
-          { type: "select", selector, value: safeStr(value, 500) },
-          `Selecting value in ${selector}.`
-        );
+        return mk({ type: "select", selector, value: safeStr(value, 500) }, `Selecting value in ${selector}.`);
       }
 
       if (kind === "LABEL") {
         const label = toks.slice(3).join(" ").trim();
         if (!label) return null;
-        return mk(
-          { type: "select", selector, label: safeStr(label, 500) },
-          `Selecting label in ${selector}.`
-        );
+        return mk({ type: "select", selector, label: safeStr(label, 500) }, `Selecting label in ${selector}.`);
       }
 
       return null;
     }
 
-    // HOVER <n> or HOVER x y
     if (cmd === "HOVER") {
       const a = toks[1];
       const b = toks[2];
 
-      // HOVER <elementNumber>
       if (a && !b && /^\d{1,3}$/.test(a)) {
         const hit = byNum(a);
         if (!hit || !Number.isFinite(hit.x) || !Number.isFinite(hit.y)) return null;
         const { x, y } = clampXY(hit.x, hit.y);
-        return mk(
-          { type: "hover", x, y },
-          `Hovering element #${hit.idx}${hit.label ? ` (“${hit.label}”)` : ""}.`
-        );
+        return mk({ type: "hover", x, y }, `Hovering element #${hit.idx}${hit.label ? ` (“${hit.label}”)` : ""}.`);
       }
 
-      // HOVER x y
+      if (a && !b && /-?\d+,-?\d+/.test(a)) {
+        const [xs, ys] = String(a).split(",");
+        const x0 = Number(xs);
+        const y0 = Number(ys);
+        if (!Number.isFinite(x0) || !Number.isFinite(y0)) return null;
+        const { x, y } = clampXY(x0, y0);
+        return mk({ type: "hover", x, y }, `Hovering at (${x}, ${y}).`);
+      }
+
       if (a && b) {
         const x = Number(a);
         const y = Number(b);
@@ -271,20 +334,17 @@ function parseFreeformToDecision(freeformRaw, ctx) {
       return null;
     }
 
-    // HOVERSEL <selector>
     if (cmd === "HOVERSEL") {
       const selector = (toks.slice(1).join(" ") || "").trim();
       if (!selector) return null;
       return mk({ type: "hover", selector: safeStr(selector, 500) }, `Hovering selector ${selector}.`);
     }
 
-    // CLICK <n> OR CLICK x y [RIGHT]
     if (cmd === "CLICK") {
       const a = toks[1];
       const b = toks[2];
       const c = String(toks[3] || "").toUpperCase();
 
-      // CLICK <elementNumber>
       if (a && !b && /^\d{1,3}$/.test(a)) {
         const hit = byNum(a);
         if (!hit || !Number.isFinite(hit.x) || !Number.isFinite(hit.y)) return null;
@@ -295,7 +355,16 @@ function parseFreeformToDecision(freeformRaw, ctx) {
         );
       }
 
-      // CLICK x y [RIGHT]
+      if (a && !b && /-?\d+,-?\d+/.test(a)) {
+        const [xs, ys] = String(a).split(",");
+        const x0 = Number(xs);
+        const y0 = Number(ys);
+        if (!Number.isFinite(x0) || !Number.isFinite(y0)) return null;
+        const { x, y } = clampXY(x0, y0);
+        const button = c === "RIGHT" ? "right" : "left";
+        return mk({ type: "click", x, y, button }, `Clicking at (${x}, ${y}) with ${button} button.`);
+      }
+
       if (a && b) {
         const x0 = Number(a);
         const y0 = Number(b);
@@ -308,7 +377,6 @@ function parseFreeformToDecision(freeformRaw, ctx) {
       return null;
     }
 
-    // SCREENSHOT x y w h [PNG|JPEG] [QUALITY n]
     if (cmd === "SCREENSHOT" || cmd === "SHOT" || cmd === "SNAP") {
       const x = Number(toks[1]);
       const y = Number(toks[2]);
@@ -342,99 +410,7 @@ function parseFreeformToDecision(freeformRaw, ctx) {
     }
   }
 
-  // ----------------------------
-  // B) Loose fallback patterns (keep minimal + safe)
-  // ----------------------------
-
-  // DONE-ish
-  if (/\b(done|completed|finished|goal achieved)\b/i.test(text) && text.length <= 140) {
-    return { done: true, message: "Done." };
-  }
-
-  // wait 4s / wait 4000ms
-  {
-    const m = text.match(/\bwait\s+(\d+)\s*(ms|s|sec|secs|second|seconds)?\b/i);
-    if (m) {
-      const ms = parseMs(m[1], m[2]);
-      if (ms != null) return mk({ type: "wait", ms }, "Waiting briefly.");
-    }
-  }
-
-  // scroll up/down
-  if (/\bscroll\b/i.test(text)) {
-    let dx = 0;
-    let dy = /\bup\b/i.test(text) ? -800 : 800;
-
-    const m = text.match(/\bscroll\b.*?(-?\d{1,5})\s*[,\s]\s*(-?\d{1,5})/i);
-    if (m) {
-      dx = Number(m[1]);
-      dy = Number(m[2]);
-    }
-
-    return mk({ type: "scroll", dx, dy }, `Scrolling by (${dx}, ${dy}).`);
-  }
-
-  // goto URL anywhere
-  {
-    const m = text.match(/\bhttps?:\/\/\S+/i);
-    if (m) return mk({ type: "goto", url: m[0] }, `Navigating to ${m[0]}.`);
-  }
-
-  // press key
-  {
-    const m = text.match(/\bpress(?:\s+key)?\s+([A-Za-z0-9_+-]+)\b/i);
-    if (m) return mk({ type: "press_key", key: m[1] }, `Pressing ${m[1]}.`);
-  }
-
-  // click element N
-  if (/\b(click|tap)\b/i.test(text)) {
-    const mN = text.match(/\b(?:element|el|#)\s*(\d{1,3})\b/i);
-    if (mN) {
-      const hit = byNum(mN[1]);
-      if (hit && Number.isFinite(hit.x) && Number.isFinite(hit.y)) {
-        const { x, y } = clampXY(hit.x, hit.y);
-        const right = /\bright\b.*\bclick\b/i.test(text) || /\bright[-\s]?click\b/i.test(text);
-        return mk(
-          { type: "click", x, y, button: right ? "right" : "left" },
-          `Clicking element #${hit.idx}${hit.label ? ` (“${hit.label}”)` : ""}.`
-        );
-      }
-    }
-
-    // click "Some Text"
-    const q = text.match(/"(.*?)"|'(.*?)'/);
-    const needle = (q?.[1] || q?.[2] || "").trim();
-    if (needle) {
-      const hit = byText(needle);
-      if (hit && Number.isFinite(hit.x) && Number.isFinite(hit.y)) {
-        const { x, y } = clampXY(hit.x, hit.y);
-        return mk(
-          { type: "click", x, y, button: "left" },
-          `Clicking element #${hit.idx}${hit.label ? ` (“${hit.label}”)` : ""}.`
-        );
-      }
-    }
-
-    // click (x,y)
-    const mXY = text.match(/\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)/);
-    if (mXY) {
-      const { x, y } = clampXY(Number(mXY[1]), Number(mXY[2]));
-      return mk({ type: "click", x, y, button: "left" }, `Clicking at (${x}, ${y}).`);
-    }
-  }
-
-  // type "text"
-  if (/\b(type|enter|input)\b/i.test(text)) {
-    const q = text.match(/"(.*?)"|'(.*?)'/);
-    const payload = (q?.[1] || q?.[2] || "").trim();
-    if (payload) return mk({ type: "type", text: safeStr(payload, 2000) }, "Typing text.");
-  }
-
-  // if clearly asking user
-  if (/\b(need|cannot|can't|unable|blocked|stuck|missing)\b/i.test(text)) {
-    return mk({ type: "ask_user", question: safeStr(text, 400) }, "Asking user for input.");
-  }
-
+  // If we had a valid command token but couldn't parse it, treat as parse failure.
   return null;
 }
 
@@ -460,6 +436,9 @@ export class AgentSession {
 
     this.llmFailStreak = 0;
     this.nextAllowedLlmAt = 0;
+
+    // Prevent re-entrant decide loops (obs inflight / repeated waits)
+    this._decideInFlight = false;
 
     // --- prompt mode controls (single env flag) ---
     this.promptMode = String(AGENT_PROMPT_MODE || "default").trim().toLowerCase();
@@ -543,7 +522,6 @@ export class AgentSession {
   }
 
   _getPromptConfig() {
-    // Freeform step config
     const base = {
       mode: this.promptMode,
       maxTokens: this.defaultMaxTokens,
@@ -563,7 +541,6 @@ export class AgentSession {
       base.maxElements = 10;
     }
 
-    // env overrides (still enforce timeout >= 30s)
     if (Number.isFinite(this.modeMaxTokens) && this.modeMaxTokens > 0) {
       base.maxTokens = clamp(Math.round(this.modeMaxTokens), 40, 900);
     }
@@ -605,11 +582,19 @@ export class AgentSession {
 You are a precise browser automation agent.
 Given the GOAL, the current URL, and the visible ELEMENTS, decide the single best next action.
 
-OUTPUT EXACTLY ONE LINE in ONE of these formats (no extra lines, no explanations):
+CRITICAL OUTPUT RULES (must follow exactly):
+- Your ENTIRE response must be EXACTLY ONE LINE.
+- That line MUST START with one of these commands:
+  CLICK, HOVER, HOVERSEL, TYPE, TYPESEL, SELECT, PRESS, SCROLL, WAIT, GOTO, SCREENSHOT, DONE, ASK
+- Do NOT output bullet lists, multiple steps, explanations, or the URL.
+- Prefer CLICK <elementNumber> from the ELEMENTS list.
+- Only use GOTO if you truly must change to a different website/page URL; otherwise CLICK/SCROLL/SELECT.
+
+OUTPUT FORMATS (choose ONE):
 - CLICK <elementNumber>
-- CLICK <x> <y> [RIGHT]
+- CLICK <x> <y> [RIGHT]     (or CLICK <x>,<y>)
 - HOVER <elementNumber>
-- HOVER <x> <y>
+- HOVER <x> <y>             (or HOVER <x>,<y>)
 - HOVERSEL <selector>
 - TYPE <text...>
 - TYPESEL <selector> <text...> [CLEAR]
@@ -622,16 +607,10 @@ OUTPUT EXACTLY ONE LINE in ONE of these formats (no extra lines, no explanations
 - DONE <message...>
 - ASK <question...>
 
-Rules:
-- Prefer CLICK <elementNumber> using the ELEMENT list coordinates.
-- Output ONE action only: choose the best immediate next step toward the goal.
-- If progress requires multiple steps, output only the next step now; the next observation will arrive and you will choose the next step then.
-- If you reference a selector, quote it if it contains spaces.
-
 GOAL:
 ${goal}
 
-URL:
+URL (for context only, DO NOT output it):
 ${String(url || "").slice(0, 2000)}
 
 CORRECTIONS:
@@ -663,6 +642,8 @@ OUTPUT ONE LINE NOW:
   }
 
   _cooldownFromFailure(reason = "llm_failure") {
+    // Keep cooldown ONLY for real LLM call failures (timeouts/network),
+    // not for parse/schema issues (those now fallback deterministically).
     this.llmFailStreak += 1;
     const waitMs = Math.min(60_000, 2_000 * Math.pow(2, this.llmFailStreak));
     this.nextAllowedLlmAt = Date.now() + waitMs;
@@ -683,173 +664,263 @@ OUTPUT ONE LINE NOW:
     };
   }
 
-  async decideNextAction() {
-    if (DBG.agent) {
-      dlog(this.sessionId, "DECIDE_BEGIN", {
-        status: this.status,
-        awaitingUser: this.awaitingUser,
-        llmFailStreak: this.llmFailStreak,
-        nextAllowedLlmAt: this.nextAllowedLlmAt,
-        hasObs: !!this.lastObs,
-        goal: String(this.goal || "").slice(0, 160),
-        url: this.lastObs?.url,
-        elementsCount: Array.isArray(this.lastObs?.elements) ? this.lastObs.elements.length : 0,
-      });
+  _fallbackDecision(reason, ctx, freeformRaw = "") {
+    const fallbackLine = buildFallbackCommandLine(this.goal, ctx?.elements || []);
+    console.log(
+      `@@LLM_ASSISTANT_COERCED@@ sessionId=${this.sessionId ?? "?"} step=${this.step} reason=${reason}\n` +
+        `raw=${safeStr(String(freeformRaw || ""), 300)}\n` +
+        `coerced=${fallbackLine}\n` +
+        `@@END_LLM_ASSISTANT_COERCED@@`
+    );
+
+    const parsed = parseFreeformToDecision(fallbackLine, ctx);
+
+    if (parsed?.done === true) {
+      return { done: true, message: safeStr(parsed.message || "Done.", 400) };
     }
 
-    if (this.awaitingUser) {
-      if (DBG.agent) dlog(this.sessionId, "DECIDE_RETURN_WAIT", { reason: "awaiting_user" });
-      return {
-        done: false,
-        requiresApproval: false,
-        action: { type: "wait", ms: 5000 },
-        explanation: "Waiting for user response.",
-      };
+    const v = parsed ? validateAndNormalizeDecision(parsed, ctx) : null;
+    if (v?.ok) {
+      // Never require approval for these fallbacks (they won't be screenshot_region)
+      v.decision.requiresApproval = false;
+      v.decision.explanation = safeStr(`Fallback action (${reason}).`, 200);
+      return v.decision;
     }
 
-    if (!this.lastObs) {
-      return {
-        done: false,
-        requiresApproval: false,
-        action: { type: "wait", ms: 5000 },
-        explanation: "No observation yet.",
-      };
-    }
-
-    if (this.status !== "running" || !this.goal) {
-      return {
-        done: false,
-        requiresApproval: false,
-        action: { type: "wait", ms: 5000 },
-        explanation: "Idle; no goal.",
-      };
-    }
-
-    if (Date.now() < this.nextAllowedLlmAt) {
-      const ms = Math.max(0, this.nextAllowedLlmAt - Date.now());
-      if (DBG.agent) dlog(this.sessionId, "DECIDE_RETURN_WAIT", { reason: "backoff", ms });
-      return {
-        done: false,
-        requiresApproval: false,
-        action: { type: "wait", ms: Math.min(60_000, ms) },
-        explanation: "Cooling down after LLM failures.",
-      };
-    }
-
-    const ctx = {
-      viewport: this.lastObs.viewport,
-      url: this.lastObs.url,
-      elements: this.lastObs.elements || [],
+    // Absolute last resort: ASK
+    return {
+      done: false,
+      requiresApproval: false,
+      action: { type: "ask_user", question: "I couldn't parse the model output. What should I click next?" },
+      explanation: `Fallback ASK (${reason}).`,
     };
+  }
 
-    const cfg = this._getPromptConfig();
-
-    // 1) FREEFORM (command) RESPONSE
-    const freeformPrompt = this._buildFreeformPrompt(cfg);
-
-    if (DBG.agent) {
-      dlog(this.sessionId, "PROMPT_BUILT_FREEFORM", {
-        mode: cfg.mode,
-        maxTokens: cfg.maxTokens,
-        timeoutMs: cfg.timeoutMs,
-        maxElements: cfg.maxElements,
-        promptChars: freeformPrompt.length,
-      });
-      if (DBG.llmPrompt) dlogBig(this.sessionId, "PROMPT_TEXT_FREEFORM", freeformPrompt);
+  async decideNextAction() {
+    // Prevent re-entrant calls from spamming WAIT loops.
+    if (this._decideInFlight) {
+      return {
+        done: false,
+        requiresApproval: false,
+        action: { type: "wait", ms: 250 },
+        explanation: "Decision in progress; throttling.",
+      };
     }
 
-    let freeformRaw = "";
+    this._decideInFlight = true;
     try {
-      freeformRaw = await chatCompletion({
-        prompt: freeformPrompt,
-        temperature: 0,
-        maxTokens: cfg.maxTokens,
-        timeoutMs: cfg.timeoutMs,
-        meta: { sessionId: this.sessionId, mode: `${cfg.mode}:freeform` },
-      });
-
-      if (DBG.agent) dlogBig(this.sessionId, "MODEL_RAW_FREEFORM", freeformRaw);
-
-      this.llmFailStreak = 0;
-      this.nextAllowedLlmAt = 0;
-    } catch (e) {
       if (DBG.agent) {
-        dlog(this.sessionId, "LLM_CALL_FAILED_FREEFORM", { message: String(e?.message || e) });
+        dlog(this.sessionId, "DECIDE_BEGIN", {
+          status: this.status,
+          awaitingUser: this.awaitingUser,
+          llmFailStreak: this.llmFailStreak,
+          nextAllowedLlmAt: this.nextAllowedLlmAt,
+          hasObs: !!this.lastObs,
+          goal: String(this.goal || "").slice(0, 160),
+          url: this.lastObs?.url,
+          elementsCount: Array.isArray(this.lastObs?.elements) ? this.lastObs.elements.length : 0,
+        });
       }
-      return this._cooldownFromFailure("llm_call_failed_freeform");
-    }
 
-    // 2) DETERMINISTIC PARSE (NO JSONIFY MODEL)
-    const parsedDecision = parseFreeformToDecision(freeformRaw, ctx);
-    if (!parsedDecision) {
-      this.badOutputCount += 1;
+      if (this.awaitingUser) {
+        if (DBG.agent) dlog(this.sessionId, "DECIDE_RETURN_WAIT", { reason: "awaiting_user" });
+        return {
+          done: false,
+          requiresApproval: false,
+          action: { type: "wait", ms: 5000 },
+          explanation: "Waiting for user response.",
+        };
+      }
 
-      this.corrections.push({
-        text:
-          "Your output could not be parsed. Output EXACTLY ONE LINE in the required format, e.g. 'CLICK 12' or 'SCROLL 0 800' or 'ASK <question>'.",
-      });
+      if (!this.lastObs) {
+        return {
+          done: false,
+          requiresApproval: false,
+          action: { type: "wait", ms: 5000 },
+          explanation: "No observation yet.",
+        };
+      }
 
-      if (DBG.agent)
-        dlog(this.sessionId, "FREEFORM_PARSE_FAILED", {
-          sample: String(freeformRaw || "").slice(0, 200),
+      if (this.status !== "running" || !this.goal) {
+        return {
+          done: false,
+          requiresApproval: false,
+          action: { type: "wait", ms: 5000 },
+          explanation: "Idle; no goal.",
+        };
+      }
+
+      if (Date.now() < this.nextAllowedLlmAt) {
+        const ms = Math.max(0, this.nextAllowedLlmAt - Date.now());
+        if (DBG.agent) dlog(this.sessionId, "DECIDE_RETURN_WAIT", { reason: "backoff", ms });
+        return {
+          done: false,
+          requiresApproval: false,
+          action: { type: "wait", ms: Math.min(60_000, ms) },
+          explanation: "Cooling down after LLM failures.",
+        };
+      }
+
+      const ctx = {
+        viewport: this.lastObs.viewport,
+        url: this.lastObs.url,
+        elements: this.lastObs.elements || [],
+      };
+
+      const cfg = this._getPromptConfig();
+
+      const freeformPrompt = this._buildFreeformPrompt(cfg);
+
+      if (DBG.agent) {
+        dlog(this.sessionId, "PROMPT_BUILT_FREEFORM", {
+          mode: cfg.mode,
+          maxTokens: cfg.maxTokens,
+          timeoutMs: cfg.timeoutMs,
+          maxElements: cfg.maxElements,
+          promptChars: freeformPrompt.length,
+        });
+        if (DBG.llmPrompt) dlogBig(this.sessionId, "PROMPT_TEXT_FREEFORM", freeformPrompt);
+      }
+
+      let freeformRaw = "";
+      try {
+        this.step += 1;
+
+        freeformRaw = await chatCompletion({
+          prompt: freeformPrompt,
+          temperature: 0,
+          maxTokens: cfg.maxTokens,
+          timeoutMs: cfg.timeoutMs,
+          meta: { sessionId: this.sessionId, stepId: this.step, mode: `${cfg.mode}:freeform` },
         });
 
-      return this._cooldownFromFailure("freeform_parse_failed");
+        if (DBG.agent) dlogBig(this.sessionId, "MODEL_RAW_FREEFORM", freeformRaw);
+
+        // Reset LLM call failure backoff on successful call
+        this.llmFailStreak = 0;
+        this.nextAllowedLlmAt = 0;
+      } catch (e) {
+        if (DBG.agent) {
+          dlog(this.sessionId, "LLM_CALL_FAILED_FREEFORM", { message: String(e?.message || e) });
+        }
+        return this._cooldownFromFailure("llm_call_failed_freeform");
+      }
+
+      // Print the raw response again with a marker close to the decision logic (easy grep)
+      console.log(
+        `@@LLM_ASSISTANT_RAW@@ sessionId=${this.sessionId ?? "?"} step=${this.step} stage=AgentSession\n` +
+          `${safeStr(String(freeformRaw || ""), 4000)}\n` +
+          `@@END_LLM_ASSISTANT_RAW@@`
+      );
+
+      // 2) DETERMINISTIC PARSE
+      const parsedDecision = parseFreeformToDecision(freeformRaw, ctx);
+
+      // If parse fails: DO NOT backoff-wait. Deterministically fallback immediately.
+      if (!parsedDecision) {
+        this.badOutputCount += 1;
+
+        this.corrections.push({
+          text:
+            "Your output could not be parsed. Output EXACTLY ONE LINE starting with a valid command, e.g. 'CLICK 12' or 'SCROLL 0 800' or 'ASK <question>'. Do not include the URL.",
+        });
+
+        if (DBG.agent) {
+          dlog(this.sessionId, "FREEFORM_PARSE_FAILED", {
+            sample: String(freeformRaw || "").slice(0, 200),
+          });
+        }
+
+        return this._fallbackDecision("freeform_parse_failed", ctx, freeformRaw);
+      }
+
+      // DONE path
+      if (parsedDecision.done === true) {
+        return { done: true, message: safeStr(parsedDecision.message || "Done.", 400) };
+      }
+
+      // ACTION path => schema validate
+      const v = validateAndNormalizeDecision(parsedDecision, ctx);
+
+      if (!v.ok) {
+        this.badOutputCount += 1;
+
+        this.corrections.push({
+          text: `Your action failed schema validation: ${v.error}. Output a valid one-line command like 'CLICK 12' or 'TYPESEL "#q" hello CLEAR'.`,
+        });
+
+        if (DBG.agent) dlog(this.sessionId, "ACTION_SCHEMA_INVALID", { error: v.error });
+
+        // No backoff WAIT here either; fallback immediately.
+        return this._fallbackDecision("invalid_action_schema", ctx, freeformRaw);
+      }
+
+      // Loop detect => immediate safe alternative (scroll) instead of WAIT loop
+      if (this._loopDetect(v.decision.action)) {
+        this.corrections.push({
+          text: "You repeated the same action multiple times. Choose a different element or scroll.",
+        });
+
+        // Prefer a non-destructive action that often reveals new clickable items.
+        console.log(
+          `@@LLM_ASSISTANT_COERCED@@ sessionId=${this.sessionId ?? "?"} step=${this.step} reason=loop_detected\n` +
+            `coerced=SCROLL 0 800\n` +
+            `@@END_LLM_ASSISTANT_COERCED@@`
+        );
+
+        const loopParsed = parseFreeformToDecision("SCROLL 0 800", ctx);
+        if (loopParsed) {
+          const vv = validateAndNormalizeDecision(loopParsed, ctx);
+          if (vv.ok) return vv.decision;
+        }
+
+        return this._fallbackDecision("loop_detected", ctx, freeformRaw);
+      }
+
+      // If too many invalid outputs, ask user instead of WAIT storm
+      if (this.badOutputCount >= 3) {
+        return {
+          done: false,
+          requiresApproval: false,
+          action: {
+            type: "ask_user",
+            question:
+              "I’m getting inconsistent model outputs. Can you tell me what button/link I should click next (or what you see on screen)?",
+          },
+          explanation: "Too many invalid model outputs; asking user.",
+        };
+      }
+
+      // Extra safety: ensure requiresApproval strictly matches policy
+      if (v.decision?.action?.type === "screenshot_region") v.decision.requiresApproval = true;
+      else v.decision.requiresApproval = false;
+
+      // Normalize scroll/wait numbers (schema already does; keep belt+suspenders)
+      if (v.decision?.action?.type === "wait") {
+        v.decision.action.ms = safeInt(v.decision.action.ms ?? 500, 500, 0, 60_000);
+      }
+      if (v.decision?.action?.type === "scroll") {
+        v.decision.action.dx = safeInt(v.decision.action.dx ?? 0, 0, -2000, 2000);
+        v.decision.action.dy = safeInt(v.decision.action.dy ?? 500, 500, -4000, 4000);
+      }
+
+      // Print final action with searchable marker
+      console.log(
+        `@@LLM_ASSISTANT_COERCED@@ sessionId=${this.sessionId ?? "?"} step=${this.step} reason=final\n` +
+          `coerced=${safeStr(JSON.stringify(v.decision.action), 800)}\n` +
+          `@@END_LLM_ASSISTANT_COERCED@@`
+      );
+
+      if (DBG.agent) {
+        dlog(this.sessionId, "DECIDE_RETURN", {
+          actionType: v?.decision?.action?.type,
+          requiresApproval: !!v?.decision?.requiresApproval,
+        });
+      }
+
+      return v.decision;
+    } finally {
+      this._decideInFlight = false;
     }
-
-    // DONE path
-    if (parsedDecision.done === true) {
-      return { done: true, message: safeStr(parsedDecision.message || "Done.", 400) };
-    }
-
-    // ACTION path => schema validate
-    const v = validateAndNormalizeDecision(parsedDecision, ctx);
-
-    if (!v.ok) {
-      this.badOutputCount += 1;
-
-      this.corrections.push({
-        text: `Your action failed schema validation: ${v.error}. Output a valid one-line command like 'CLICK 12' or 'TYPESEL "#q" hello CLEAR'.`,
-      });
-
-      if (DBG.agent) dlog(this.sessionId, "ACTION_SCHEMA_INVALID", { error: v.error });
-
-      return this._cooldownFromFailure("invalid_action_schema");
-    }
-
-    // Loop detect
-    if (this._loopDetect(v.decision.action)) {
-      this.corrections.push({
-        text: "You repeated the same action multiple times. Choose a different element or scroll.",
-      });
-      return this._cooldownFromFailure("loop_detected");
-    }
-
-    // Guardrail: if we keep getting bad outputs, backoff
-    if (this.badOutputCount >= 3) {
-      return this._cooldownFromFailure("too_many_invalid_outputs");
-    }
-
-    // Extra safety: ensure requiresApproval strictly matches policy
-    if (v.decision?.action?.type === "screenshot_region") v.decision.requiresApproval = true;
-    else v.decision.requiresApproval = false;
-
-    // Extra safety: normalize scroll/wait numbers (schema already does; keep belt+suspenders)
-    if (v.decision?.action?.type === "wait") {
-      v.decision.action.ms = safeInt(v.decision.action.ms ?? 500, 500, 0, 60_000);
-    }
-    if (v.decision?.action?.type === "scroll") {
-      v.decision.action.dx = safeInt(v.decision.action.dx ?? 0, 0, -2000, 2000);
-      v.decision.action.dy = safeInt(v.decision.action.dy ?? 500, 500, -4000, 4000);
-    }
-
-    if (DBG.agent) {
-      dlog(this.sessionId, "DECIDE_RETURN", {
-        actionType: v?.decision?.action?.type,
-        requiresApproval: !!v?.decision?.requiresApproval,
-      });
-    }
-
-    return v.decision;
   }
 }

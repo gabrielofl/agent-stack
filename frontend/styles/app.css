@@ -625,3 +625,25 @@ footer.footer{
   overflow: auto;
   min-height: 0;
 }
+
+.health-pills {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-right: 10px;
+}
+
+.pill {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.9);
+  user-select: none;
+}
+
+.pill-unk { opacity: 0.75; }
+.pill-ok  { border-color: rgba(35, 209, 96, 0.55); }
+.pill-warn{ border-color: rgba(255, 193, 7, 0.55); }
+.pill-bad { border-color: rgba(255, 77, 79, 0.55); }

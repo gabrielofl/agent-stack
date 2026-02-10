@@ -8,6 +8,74 @@ import { auth } from "./auth.js";
 
 ui.init();
 
+function setPill(el, state, title) {
+  if (!el) return;
+  el.classList.remove("pill-unk", "pill-ok", "pill-warn", "pill-bad");
+  el.classList.add(
+    state === "ok" ? "pill-ok" :
+    state === "warn" ? "pill-warn" :
+    state === "bad" ? "pill-bad" : "pill-unk"
+  );
+  if (title) el.title = title;
+}
+
+const pillBackend = document.getElementById("pillBackend");
+const pillAgent   = document.getElementById("pillAgent");
+const pillLlm     = document.getElementById("pillLlm");
+
+async function pollPills() {
+  // Backend
+  try {
+    const t0 = performance.now();
+    const { ok, status } = await api.health();
+    const ms = Math.round(performance.now() - t0);
+    setPill(pillBackend, ok ? "ok" : "bad", `Backend /health → ${status} (${ms}ms)`);
+  } catch (e) {
+    setPill(pillBackend, "bad", `Backend down: ${String(e?.message || e)}`);
+  }
+
+  // Agent (worker container)
+  try {
+    const t0 = performance.now();
+    const r = await api.workerHealth();
+    const ms = Math.round(performance.now() - t0);
+    setPill(pillAgent, r.ok ? "ok" : "bad", `Agent /health → ${r.status} (${ms}ms)`);
+  } catch (e) {
+    setPill(pillAgent, "bad", `Agent unreachable: ${String(e?.message || e)}`);
+  }
+
+  // LLM (optional)
+  // Option A: only show LLM after /worker/start returns llmStatus (no polling)
+  // Option B: poll /worker/llm if you implement it (recommended for clarity)
+
+  if (typeof api.workerLlmHealth === "function") {
+    try {
+      const t0 = performance.now();
+      const r = await api.workerLlmHealth();
+      const ms = Math.round(performance.now() - t0);
+
+      // Choose a heuristic: if json.level exists, use it
+      const level = r.json?.level;
+      if (r.ok && (level === "ready" || r.json?.ok === true)) {
+        setPill(pillLlm, "ok", `LLM ready (${ms}ms)`);
+      } else if (r.ok) {
+        setPill(pillLlm, "warn", `LLM degraded (${ms}ms)`);
+      } else {
+        setPill(pillLlm, "bad", `LLM down: HTTP ${r.status}`);
+      }
+    } catch (e) {
+      setPill(pillLlm, "bad", `LLM probe failed: ${String(e?.message || e)}`);
+    }
+  } else {
+    // no route, keep unknown until you set from /worker/start llmStatus
+    setPill(pillLlm, "unk", "LLM: not polled");
+  }
+}
+
+// every 10s
+setInterval(pollPills, 10_000);
+pollPills();
+
 // -------------------- Backend fqdn --------------------
 state.backendFqdn = api.normalizeFqdn(
   localStorage.getItem("backendFqdn") || CONFIG.DEFAULT_BACKEND_FQDN
@@ -78,7 +146,7 @@ async function postAdminJson(path, body) {
 
 function logLlmStatusToAdminConsole(s) {
   if (!s) {
-    ui.systemLog("[LLM] No llmStatus returned from /agent/start", "warn");
+    ui.systemLog("[LLM] No llmStatus returned from /worker/start", "warn");
     return;
   }
 
@@ -113,14 +181,25 @@ function logLlmStatusToAdminConsole(s) {
   ui.systemLog(`❌ LLM DOWN | ${summary} | err=${err} | base=${base}`, "error");
 }
 
-// Start agent stream in IDLE mode (backend: POST /agent/start; worker will “wait for instructions”)
-// Start agent stream in IDLE mode (backend: POST /agent/start)
+function setLlmPillFromStatus(llmStatus) {
+  if (!pillLlm || !llmStatus) return;
+  const level = llmStatus.level || (llmStatus.ok ? "ready" : "down");
+  if (level === "ready") setPill(pillLlm, "ok", llmStatus.summary || "LLM ready");
+  else if (level === "degraded") setPill(pillLlm, "warn", llmStatus.summary || "LLM degraded");
+  else setPill(pillLlm, "bad", llmStatus.summary || "LLM down");
+}
+
+
+// Start agent stream in IDLE mode (backend: POST /worker/start; worker will “wait for instructions”)
+// Start agent stream in IDLE mode (backend: POST /worker/start)
 async function startAgentIdle(sessionId) {
 	// Use the official API method you already have
 	const out = await api.startAgent(sessionId, "default");
 
 // ✅ log once to admin console
-logLlmStatusToAdminConsole(out?.llmStatus);
+	logLlmStatusToAdminConsole(out?.llmStatus);
+	setLlmPillFromStatus(out?.llmStatus);
+
   return;
 }
 
@@ -129,7 +208,7 @@ async function sendAgentInstruction(sessionId, text) {
   if (typeof api.instruction === "function") {
     return api.instruction(sessionId, text, "default");
   }
-  return postAdminJson("/agent/instruction", { sessionId, text, model: "default" });
+  return postAdminJson("/worker/instruction", { sessionId, text, model: "default" });
 }
 
 // -------------------- Chat command surface --------------------

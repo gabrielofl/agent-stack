@@ -4,12 +4,10 @@ import cors from "cors";
 
 import { corsOriginDelegate } from "./config/cors.js";
 
-import { healthRouter } from "./routes/health.routes.js";
 import { adminRouter } from "./routes/admin.routes.js";
-import { workerRouter } from "./routes/worker.routes.js";
+import { healthRouter } from "./routes/health.routes.js";
 import { sessionsRouter } from "./routes/sessions.routes.js";
-import { agentRouter } from "./routes/agent.routes.js";
-import { workerReadinessRouter } from "./routes/workerReadiness.routes.js";
+import { workerRouter } from "./routes/worker.routes.js";
 
 export function createApp() {
   const app = express();
@@ -30,12 +28,10 @@ export function createApp() {
 
   app.use(express.json({ limit: "2mb" }));
 
-  app.use(healthRouter);
   app.use(adminRouter);
-  app.use(workerRouter);
+  app.use(healthRouter);
   app.use(sessionsRouter);
-	app.use(agentRouter);
-	app.use(workerReadinessRouter);
+  app.use(workerRouter);
 
   return app;
 }

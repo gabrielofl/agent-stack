@@ -28,6 +28,22 @@ function isHttpUrl(url) {
   return /^https?:\/\//i.test(url);
 }
 
+function sanitizeUrl(rawUrl) {
+  let u = String(rawUrl ?? "").trim();
+  if (!u) return "";
+
+  // Strip wrapping quotes
+  if ((u.startsWith('"') && u.endsWith('"')) || (u.startsWith("'") && u.endsWith("'"))) {
+    u = u.slice(1, -1).trim();
+  }
+
+  // Strip common trailing punctuation that models often include
+  // e.g. https://x.com/",  https://x.com).  https://x.com,
+  u = u.replace(/[)\],.;"'”]+$/g, "");
+
+  return u.trim();
+}
+
 /**
  * Convert to a clamped integer, falling back to a default when NaN/Infinity/etc.
  */
@@ -115,7 +131,7 @@ export function validateAndNormalizeDecision(raw, ctx) {
   }
 
   if (type === "goto") {
-    const url = safeStr(action.url, 2000).trim();
+    const url = sanitizeUrl(safeStr(action.url, 2000));
     if (!isHttpUrl(url)) return { ok: false, error: "goto.url must start with http(s)://" };
     return { ok: true, decision: { requiresApproval, action: { type, url } } };
   }
@@ -144,7 +160,6 @@ export function validateAndNormalizeDecision(raw, ctx) {
     const x = safeInt(action.x, 0, 0, W - 1);
     const y = safeInt(action.y, 0, 0, H - 1);
 
-    // w/h depend on x/y, so clamp after computing remaining bounds
     const maxW = Math.max(1, W - x);
     const maxH = Math.max(1, H - y);
 
@@ -152,10 +167,7 @@ export function validateAndNormalizeDecision(raw, ctx) {
     const h = safeInt(action.h ?? 200, 200, 1, maxH);
 
     const format = action.format === "jpeg" ? "jpeg" : "png";
-    const quality =
-      format === "jpeg"
-        ? safeInt(action.quality ?? 70, 70, 1, 100)
-        : undefined;
+    const quality = format === "jpeg" ? safeInt(action.quality ?? 70, 70, 1, 100) : undefined;
 
     return {
       ok: true,
