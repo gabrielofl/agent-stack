@@ -1,7 +1,12 @@
 // src/routes/health.routes.js
 import { Router } from "express";
+import {
+  getLlmStatus,
+  readBootLogTail,
+} from "../services/llmDebug.js";
 
 export const healthRouter = Router();
+
 healthRouter.get("/health", (req, res) => res.json({ ok: true }));
 
 healthRouter.get("/debug/env", (req, res) => {
@@ -22,11 +27,20 @@ healthRouter.get("/debug/env", (req, res) => {
 });
 
 healthRouter.get("/debug/llm/status", (req, res) => {
-  res.json({ ok: true, status: getLlmStatus() });
+  try {
+    const s = getLlmStatus();
+    res.json(s);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "internal_error", detail: String(e?.message || e) });
+  }
 });
 
 healthRouter.get("/debug/llm/log", (req, res) => {
-  const lines = Math.max(1, Math.min(2000, Number(req.query.lines || 200)));
-  const tail = readBootLogTail(lines);
-  res.type("text/plain").send(tail || "");
+  try {
+    const lines = Math.max(1, Math.min(2000, Number(req.query.lines || 200)));
+    const text = readBootLogTail(lines);
+    res.type("text/plain").send(text || "");
+  } catch (e) {
+    res.status(500).type("text/plain").send(`internal_error: ${String(e?.message || e)}`);
+  }
 });

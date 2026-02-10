@@ -93,9 +93,11 @@ trap cleanup EXIT INT TERM
   write_status "waiting_ready" "waiting for /health"
 
   for i in {1..300}; do
-    if curl -sf "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
+    if curl -sf "http://127.0.0.1:8080/health" >/dev/null 2>&1 \
+      || curl -sf "http://127.0.0.1:8080/v1/models" >/dev/null 2>&1 \
+      || curl -sf "http://127.0.0.1:8080/" >/dev/null 2>&1; then
       echo "llama-server is up."
-      write_status "ready" "llama-server is healthy" "\"healthUrl\":\"http://127.0.0.1:8080/health\""
+      write_status "ready" "llama-server is healthy" "\"baseUrl\":\"http://127.0.0.1:8080\""
       exit 0
     fi
     if ! kill -0 "$MODEL_PID" 2>/dev/null; then

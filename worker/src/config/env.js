@@ -91,5 +91,5 @@ export const STREAM_RATE_LIMIT_MAX = Number(process.env.STREAM_RATE_LIMIT_MAX ||
 export const STREAM_RATE_LIMIT_WINDOW_MS = Number(process.env.STREAM_RATE_LIMIT_WINDOW_MS || 5000);
 export const STREAM_MAX_CLIENTS_PER_SESSION = Number(process.env.STREAM_MAX_CLIENTS_PER_SESSION || 25);
 export const STREAM_DEDUPE_SKIP_TYPES = String(
-  process.env.STREAM_DEDUPE_SKIP_TYPES || "agent_proposed_action"
+  process.env.STREAM_DEDUPE_SKIP_TYPES || "agent_proposed_action" || "llm_status"
 );

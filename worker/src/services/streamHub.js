@@ -17,7 +17,7 @@ const MAX_CLIENTS_PER_SESSION = Number(process.env.STREAM_MAX_CLIENTS_PER_SESSIO
 
 // Optional: skip dedupe for these message types
 const DEDUPE_SKIP_TYPES = new Set(
-  String(process.env.STREAM_DEDUPE_SKIP_TYPES || "agent_proposed_action")
+  String(process.env.STREAM_DEDUPE_SKIP_TYPES || "agent_proposed_action" || "llm_status")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)

@@ -156,12 +156,9 @@ function setLlmPillFromStatus(llmStatus) {
 // Start agent stream in IDLE mode (backend: POST /worker/start; worker will “wait for instructions”)
 // Start agent stream in IDLE mode (backend: POST /worker/start)
 async function startAgentIdle(sessionId) {
-	// Use the official API method you already have
-	const out = await api.startAgent(sessionId, "default");
-
-
-	setLlmPillFromStatus(out?.llmStatus);
-	ui.systemLog(`LLM: ${out?.llmStatus?.level || (out?.llmStatus?.ok ? "ready" : "degraded")}`);
+	await api.startAgent(sessionId, "default");
+	// do NOT log here; backend will push llm_status via WS
+	ui.systemLog("Requested worker start; waiting for LLM status push…");
 
   return;
 }
