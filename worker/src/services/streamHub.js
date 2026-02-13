@@ -1,29 +1,39 @@
 // src/services/streamHub.js
 // Improvements:
-// - Deduplicate identical payloads per session for a short TTL
-// - Rate-limit pushes per session to avoid event storms and memory/CPU spikes
-// - Cleanup dead sockets automatically on send failure
+// - Correct env parsing for dedupe skip types
+// - More predictable dedupe key + per-type TTL
+// - Rate-limit drops low-value spam first
+// - Cleanup dead sockets automatically
 // - Optional caps on viewers per session
-//
-// This is intentionally simple (no async queues) so it can't "pile up" memory.
 
 export const streams = new Map(); // sessionId -> Set<ws>
 
 // ---- tunables (env overridable) ----
 const DEDUPE_WINDOW_MS = Number(process.env.STREAM_DEDUPE_WINDOW_MS || 8000);
-const RATE_LIMIT_MAX = Number(process.env.STREAM_RATE_LIMIT_MAX || 40); // messages
-const RATE_LIMIT_WINDOW_MS = Number(process.env.STREAM_RATE_LIMIT_WINDOW_MS || 5000); // per session
+
+// Messages per window per session.
+// When exceeded, we drop low-priority messages first.
+const RATE_LIMIT_MAX = Number(process.env.STREAM_RATE_LIMIT_MAX || 40);
+const RATE_LIMIT_WINDOW_MS = Number(process.env.STREAM_RATE_LIMIT_WINDOW_MS || 5000);
 const MAX_CLIENTS_PER_SESSION = Number(process.env.STREAM_MAX_CLIENTS_PER_SESSION || 25);
 
-// Optional: skip dedupe for these message types
+// Default: skip dedupe for these types (comma-separated)
 const DEDUPE_SKIP_TYPES = new Set(
-  String(process.env.STREAM_DEDUPE_SKIP_TYPES || "agent_proposed_action" || "llm_status")
+  String(process.env.STREAM_DEDUPE_SKIP_TYPES || "agent_proposed_action,llm_status")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
 );
 
-// sessionId -> { lastKey, lastAt, rlCount, rlWindowStart }
+// Prefer dropping these types when rate-limited
+const LOW_PRIORITY_TYPES = new Set(
+  String(process.env.STREAM_LOW_PRIORITY_TYPES || "agent_event,frame")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+// sessionId -> { lastKeyByType: Map<string,string>, lastAtByType: Map<string,number>, rlCount, rlWindowStart }
 const sessionState = new Map();
 
 function now() {
@@ -33,7 +43,12 @@ function now() {
 function getState(sessionId) {
   let st = sessionState.get(sessionId);
   if (!st) {
-    st = { lastKey: "", lastAt: 0, rlCount: 0, rlWindowStart: 0 };
+    st = {
+      lastKeyByType: new Map(),
+      lastAtByType: new Map(),
+      rlCount: 0,
+      rlWindowStart: 0,
+    };
     sessionState.set(sessionId, st);
   }
   return st;
@@ -41,35 +56,48 @@ function getState(sessionId) {
 
 function makeDedupeKey(msg) {
   try {
-    // stable-ish key: type + status + message + stepId + action.type + ask_user question
     const t = msg?.type || "";
+    const sessionId = msg?.sessionId || "";
     const status = msg?.status || "";
     const message = msg?.message || "";
     const stepId = msg?.stepId || "";
     const aType = msg?.action?.type || "";
-    const question = msg?.action?.question || "";
-    return `${t}|${status}|${stepId}|${aType}|${message}|${question}`;
+    const question =
+      msg?.question || msg?.action?.question || msg?.action?.text || "";
+
+    // keep stable, short-ish
+    return `${t}|${sessionId}|${status}|${stepId}|${aType}|${message}|${question}`;
   } catch {
     return String(msg?.type || "unknown");
   }
 }
 
-function shouldDropByRateLimit(st) {
+function resetRateWindowIfNeeded(st) {
   const t = now();
   if (!st.rlWindowStart || t - st.rlWindowStart > RATE_LIMIT_WINDOW_MS) {
     st.rlWindowStart = t;
     st.rlCount = 0;
   }
+}
+
+function shouldDropByRateLimit(st, type) {
+  resetRateWindowIfNeeded(st);
   st.rlCount++;
-  return st.rlCount > RATE_LIMIT_MAX;
+
+  if (st.rlCount <= RATE_LIMIT_MAX) return false;
+
+  // When over limit: drop low-priority types first
+  if (LOW_PRIORITY_TYPES.has(type)) return true;
+
+  // If it's high priority, still allow a few extra before dropping
+  // (prevents losing proposed_action/action_result messages)
+  const hardCap = RATE_LIMIT_MAX + 15;
+  return st.rlCount > hardCap;
 }
 
 function isWsOpen(ws) {
-  // ws (popular libs): readyState 1 = OPEN
-  // some libs expose WebSocket.OPEN (1)
-  const rs = ws?.readyState;
-  if (typeof rs !== "number") return true; // best-effort
-  return rs === 1;
+  // ws.readyState: 1 = OPEN
+  return ws?.readyState === 1;
 }
 
 function cleanupIfEmpty(sessionId) {
@@ -87,23 +115,21 @@ export function addStream(sessionId, ws) {
     streams.set(sessionId, set);
   }
 
-  // Optional cap: drop extra viewers to prevent unbounded memory usage
+  // Optional cap
   if (set.size >= MAX_CLIENTS_PER_SESSION) {
     try {
-      ws.close?.();
+      ws.close?.(1013, "too many viewers"); // try again later
     } catch {}
     return;
   }
 
   set.add(ws);
 
-  // Best-effort cleanup on close/error (if your ws lib emits these)
+  // Best-effort cleanup on close/error
   try {
     ws.on?.("close", () => removeStream(sessionId, ws));
     ws.on?.("error", () => removeStream(sessionId, ws));
-  } catch {
-    // ignore if ws.on is not available
-  }
+  } catch {}
 }
 
 export function removeStream(sessionId, ws) {
@@ -119,21 +145,24 @@ export function push(sessionId, msg) {
   if (!set || set.size === 0) return;
 
   const st = getState(sessionId);
-
-  // Rate-limit: drop if session is spamming
-  if (shouldDropByRateLimit(st)) return;
-
-  // Dedupe identical event payloads within a time window
-  const type = msg?.type || "";
+  const type = String(msg?.type || "agent_event");
   const t = now();
 
+  // Rate limit
+  if (shouldDropByRateLimit(st, type)) return;
+
+  // Dedupe per message type within a time window
   if (!DEDUPE_SKIP_TYPES.has(type)) {
     const key = makeDedupeKey(msg);
-    if (key && key === st.lastKey && t - st.lastAt < DEDUPE_WINDOW_MS) {
+    const lastKey = st.lastKeyByType.get(type) || "";
+    const lastAt = st.lastAtByType.get(type) || 0;
+
+    if (key && key === lastKey && t - lastAt < DEDUPE_WINDOW_MS) {
       return;
     }
-    st.lastKey = key;
-    st.lastAt = t;
+
+    st.lastKeyByType.set(type, key);
+    st.lastAtByType.set(type, t);
   }
 
   // stringify once

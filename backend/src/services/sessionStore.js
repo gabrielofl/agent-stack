@@ -1,17 +1,24 @@
 // src/services/sessionStore.js (ESM)
 import crypto from "crypto";
 
-// -------------------- In-memory Sessions (MVP) --------------------
 // sessionId -> {
 //   browser, context, page, viewport,
-//   clients:Set<WebSocket>, interval,
+//   clients:Set<WebSocket>,
+//   interval, _frameInterval,
+//
 //   agent: { running, goal, model, lastObsAt, pendingApprovals: Map(stepId->action) },
-//   workerWs, workerConnecting: Promise<void> | null,
-//   workerReconnectTimer, workerBackoffMs
+//
+//   workerWs, workerConnecting, workerReconnectTimer, workerBackoffMs,
+//
+//   // observe pacing / caching (set by sessionLifecycle)
+//   _observeInflight, _observeCooldownUntil, _observeBackoffMs,
+//   _lastElementsAt, _cachedElements, _cachedElementsHash,
+//
+//   // action backpressure (set by workerStream/viewerWs)
+//   _actionQueue: Promise
 // }
 export const sessions = new Map();
 
 export function newId() {
-  // more collision-resistant than Math.random
   return `${crypto.randomBytes(6).toString("hex")}-${Date.now().toString(36)}`;
 }

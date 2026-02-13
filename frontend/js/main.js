@@ -8,6 +8,11 @@ import { auth } from "./auth.js";
 
 ui.init();
 
+// -------------------- Backend fqdn (MUST be set before any polling) --------------------
+state.backendFqdn = api.normalizeFqdn(
+  localStorage.getItem("backendFqdn") || CONFIG.DEFAULT_BACKEND_FQDN
+);
+
 function setPill(el, state, title) {
   if (!el) return;
   el.classList.remove("pill-unk", "pill-ok", "pill-warn", "pill-bad");
@@ -24,7 +29,7 @@ const pillAgent   = document.getElementById("pillAgent");
 const pillLlm     = document.getElementById("pillLlm");
 
 async function pollPills() {
-  // Backend
+  // Backend pill stays (fine)
   try {
     const t0 = performance.now();
     const { ok, status } = await api.health();
@@ -32,6 +37,17 @@ async function pollPills() {
     setPill(pillBackend, ok ? "ok" : "bad", `Backend /health → ${status} (${ms}ms)`);
   } catch (e) {
     setPill(pillBackend, "bad", `Backend down: ${String(e?.message || e)}`);
+  }
+
+  // ✅ Only poll worker pills when a session exists AND viewer WS is open.
+  // This prevents the UI from keeping the worker alive after /stop or disconnect.
+  const hasSession = !!state.session?.sessionId;
+  const wsOpen = !!state.ws && state.ws.readyState === 1;
+
+  if (!hasSession || !wsOpen) {
+    setPill(pillAgent, "unk", "Agent: stopped");
+    setPill(pillLlm, "unk", "LLM: stopped");
+    return;
   }
 
   // Agent (worker container)
@@ -45,16 +61,12 @@ async function pollPills() {
   }
 
   // LLM (optional)
-  // Option A: only show LLM after /worker/start returns llmStatus (no polling)
-  // Option B: poll /worker/llm if you implement it (recommended for clarity)
-
   if (typeof api.workerLlmHealth === "function") {
     try {
       const t0 = performance.now();
       const r = await api.workerLlmHealth();
       const ms = Math.round(performance.now() - t0);
 
-      // Choose a heuristic: if json.level exists, use it
       const level = r.json?.level;
       if (r.ok && (level === "ready" || r.json?.ok === true)) {
         setPill(pillLlm, "ok", `LLM ready (${ms}ms)`);
@@ -67,7 +79,6 @@ async function pollPills() {
       setPill(pillLlm, "bad", `LLM probe failed: ${String(e?.message || e)}`);
     }
   } else {
-    // no route, keep unknown until you set from /worker/start llmStatus
     setPill(pillLlm, "unk", "LLM: not polled");
   }
 }
@@ -75,11 +86,6 @@ async function pollPills() {
 // every 10s
 setInterval(pollPills, 10_000);
 pollPills();
-
-// -------------------- Backend fqdn --------------------
-state.backendFqdn = api.normalizeFqdn(
-  localStorage.getItem("backendFqdn") || CONFIG.DEFAULT_BACKEND_FQDN
-);
 
 // Optional admin debug
 if (ui.originText) ui.originText.textContent = location.origin;
@@ -127,7 +133,6 @@ async function postAdminJson(path, body) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      // your backend requireAdmin typically uses Bearer token
       authorization: `Bearer ${state.adminToken}`,
     },
     body: JSON.stringify(body || {}),
@@ -136,7 +141,6 @@ async function postAdminJson(path, body) {
   const text = await r.text();
   if (!r.ok) throw new Error(`${path} ${r.status}: ${text.slice(0, 200)}`);
 
-  // tolerate empty responses
   try {
     return text ? JSON.parse(text) : { ok: true };
   } catch {
@@ -152,18 +156,14 @@ function setLlmPillFromStatus(llmStatus) {
   else setPill(pillLlm, "bad", llmStatus.summary || "LLM down");
 }
 
-
-// Start agent stream in IDLE mode (backend: POST /worker/start; worker will “wait for instructions”)
-// Start agent stream in IDLE mode (backend: POST /worker/start)
+// Start agent stream in IDLE mode
 async function startAgentIdle(sessionId) {
-	await api.startAgent(sessionId, "default");
-	// do NOT log here; backend will push llm_status via WS
-	ui.systemLog("Requested worker start; waiting for LLM status push…");
-
+  await api.startAgent(sessionId, "default");
+  ui.systemLog("Requested worker start; waiting for LLM status push…");
   return;
 }
 
-// Send instruction (backend: POST /agent/instruction; worker begins running)
+// Send instruction
 async function sendAgentInstruction(sessionId, text) {
   if (typeof api.instruction === "function") {
     return api.instruction(sessionId, text, "default");
@@ -173,7 +173,6 @@ async function sendAgentInstruction(sessionId, text) {
 
 // -------------------- Chat command surface --------------------
 function parseArgs(s) {
-  // keeps quoted groups: /type "hello world"
   const out = [];
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
   let m;
@@ -208,7 +207,6 @@ async function handleStart(url) {
 
     wsClient.connect(recomputeOverall);
 
-    // ✅ Desired behavior: start agent stream in IDLE, waiting for chat instructions
     if (state.isAdmin && state.adminToken) {
       ui.systemLog("Starting agent stream (idle)…");
       await startAgentIdle(state.session.sessionId);
@@ -230,11 +228,27 @@ function handleReconnect() {
   wsClient.connect(recomputeOverall);
 }
 
-function handleStop() {
+async function stopAgentOnBackend(sessionId) {
+  return postAdminJson("/worker/stop", { sessionId });
+}
+
+async function handleStop() {
   echoUser("/stop");
-  try {
-    if (state.ws) state.ws.close();
-  } catch {}
+
+  const sid = state.session?.sessionId;
+
+  // ✅ tell backend to stop agent + disconnect worker stream + disable backend polling
+  if (sid && state.isAdmin && state.adminToken) {
+    try {
+      await stopAgentOnBackend(sid);
+      ui.systemLog("Backend: worker stopped; polling disabled.");
+    } catch (e) {
+      ui.systemLog(`Backend stop failed: ${String(e?.message || e)}`, "warn");
+    }
+  }
+
+  // ✅ close viewer WS
+  try { if (state.ws) state.ws.close(); } catch {}
   state.ws = null;
   state.session = null;
   state.lastWs = "closed";
@@ -256,7 +270,6 @@ function handleGoto(url) {
   wsClient.send({ type: "goto", url: u });
 }
 
-// Manual typing into page (kept via /type)
 function handleType(text) {
   const t = (text || "");
   if (!t) return;
@@ -264,18 +277,15 @@ function handleType(text) {
   wsClient.send({ type: "user_type", text: t });
 }
 
-// Optional extra commands (manual control)
 function handleClick(x, y) {
-  const xi = Number(x),
-    yi = Number(y);
+  const xi = Number(x), yi = Number(y);
   if (!Number.isFinite(xi) || !Number.isFinite(yi)) return;
   echoUser(`/click ${xi} ${yi}`);
   wsClient.send({ type: "user_click", x: xi, y: yi, button: "left" });
 }
 
 function handleScroll(dx, dy) {
-  const dxi = Number(dx),
-    dyi = Number(dy);
+  const dxi = Number(dx), dyi = Number(dy);
   if (!Number.isFinite(dxi) || !Number.isFinite(dyi)) return;
   echoUser(`/scroll ${dxi} ${dyi}`);
   wsClient.send({ type: "user_scroll", dx: dxi, dy: dyi });
@@ -288,13 +298,10 @@ function handleKey(key) {
   wsClient.send({ type: "user_press_key", key: k });
 }
 
-// ✅ This is the key change:
-// after a session exists, plain chat text => agent instruction (NOT user_type)
 async function handleInstruction(text) {
   const t = String(text || "").trim();
   if (!t) return;
 
-  // requirement: show everything the user typed in chat
   echoUser(t);
 
   if (!state.session?.sessionId) {
@@ -320,39 +327,27 @@ async function dispatchChatCommand(raw) {
   const line = (raw || "").trim();
   if (!line) return;
 
-  // commands start with "/"
   if (line.startsWith("/")) {
     const parts = parseArgs(line);
     const cmd = (parts[0] || "").toLowerCase();
     const args = parts.slice(1);
 
     switch (cmd) {
-      case "/start":
-        return handleStart(args[0]);
-      case "/reconnect":
-        return handleReconnect();
-      case "/stop":
-        return handleStop();
-      case "/goto":
-        return handleGoto(args[0]);
+      case "/start": return handleStart(args[0]);
+      case "/reconnect": return handleReconnect();
+      case "/stop": return handleStop();
+      case "/goto": return handleGoto(args[0]);
 
-      // manual page control stays explicit
-      case "/type":
-        return handleType(args.join(" "));
-      case "/click":
-        return handleClick(args[0], args[1]);
-      case "/scroll":
-        return handleScroll(args[0], args[1]);
-      case "/key":
-        return handleKey(args.join(" "));
+      case "/type": return handleType(args.join(" "));
+      case "/click": return handleClick(args[0], args[1]);
+      case "/scroll": return handleScroll(args[0], args[1]);
+      case "/key": return handleKey(args.join(" "));
 
       default:
-        // unknown slash command: treat it as an instruction (still matches your “everything in chat” feel)
         return handleInstruction(line);
     }
   }
 
-  // ✅ plain text => instruction (once session exists)
   return handleInstruction(line);
 }
 
@@ -415,7 +410,6 @@ setInterval(() => {
 }, CONFIG.FRAME_WATCHDOG_MS);
 
 // -------------------- Legacy buttons -> route through chat dispatcher --------------------
-// (kept so your hidden legacyControls don't break)
 ui.el("btnStart").onclick = async () => {
   const startUrl = (ui.el("startUrl").value || "https://example.com").trim();
   await dispatchChatCommand(`/start ${startUrl}`);
@@ -441,7 +435,7 @@ ui.el("btnGoto").onclick = async () => {
   await dispatchChatCommand(`/goto ${url}`);
 };
 
-// -------------------- Agent controls (admin actions; keep user-visible confirmations) --------------------
+// -------------------- Agent controls --------------------
 ui.el("btnApprove").onclick = () => {
   if (!state.isAdmin) return ui.pushUserFeed("System: admin required to approve.", "warn");
   if (!state.pendingStepId) return ui.pushUserFeed("System: no pending step to approve.", "warn");
@@ -471,7 +465,7 @@ ui.el("btnAsk").onclick = async () => {
   }
 };
 
-// -------------------- Viewer interactions (user actions -> user chat) --------------------
+// -------------------- Viewer interactions --------------------
 ui.screenEl.addEventListener("click", (e) => {
   if (!state.ws || state.ws.readyState !== 1) return;
   const rect = ui.screenEl.getBoundingClientRect();
@@ -482,7 +476,6 @@ ui.screenEl.addEventListener("click", (e) => {
   wsClient.send({ type: "user_click", x, y, button: "left" });
 });
 
-// Scroll wheel -> user_scroll
 ui.screenEl.addEventListener(
   "wheel",
   (e) => {
@@ -498,7 +491,6 @@ ui.screenEl.addEventListener(
   { passive: false }
 );
 
-// Key presses -> user_press_key (ignore when typing in input/textarea)
 document.addEventListener("keydown", (e) => {
   if (!state.ws || state.ws.readyState !== 1) return;
 
@@ -516,7 +508,6 @@ document.addEventListener("keydown", (e) => {
   wsClient.send({ type: "user_press_key", key });
 });
 
-// Hover (throttled) -> user_hover (no chat spam)
 let lastHoverAt = 0;
 ui.screenEl.addEventListener("mousemove", (e) => {
   if (!state.ws || state.ws.readyState !== 1) return;

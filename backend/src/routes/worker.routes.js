@@ -7,6 +7,8 @@ import { WORKER_HTTP } from "../config/env.js";
 import { ensureWorkerStream } from "../services/workerStream.js";
 import { executeAgentAction } from "../services/pageHelpers.js";
 import { broadcastToSession } from "../services/frontendBroadcast.js";
+import { disconnectWorker } from "../services/disconnectWorker.js";
+import { stopLlmStatusPolling } from "../services/llmStatusCache.js"; // we’ll add this next
 
 export const workerRouter = Router();
 
@@ -251,13 +253,34 @@ workerRouter.post("/worker/correction", requireAdmin, async (req, res) => {
 
 // INTERNAL: proxy observe manually (admin only)
 workerRouter.post("/worker/observe", requireAdmin, async (req, res) => {
-  const { sessionId, obs } = req.body || {};
+  const { sessionId } = req.body || {};
   if (!sessionId) return res.status(400).json({ error: "missing sessionId" });
+
+  const sess = sessions.get(sessionId);
+  if (!sess) return res.status(400).json({ error: "bad sessionId" });
+
+  const now = Date.now();
+
+  const img = sess._lastFrameImg || "";
+  const imgTs = sess._lastFrameAt || 0;
+
+  const elements = sess._cachedElements || [];
+  const elementsHash = sess._cachedElementsHash || "";
 
   const r = await fetchFn(`${WORKER_HTTP}/agent/observe`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId, ...(obs || {}) }),
+    body: JSON.stringify({
+      sessionId,
+      obsId: `obs-${now}`,
+      url: sess.page.url(),
+      viewport: sess.viewport,
+      img,
+      imgTs,
+      elements,
+      elementsHash,
+      ts: now,
+    }),
   });
 
   const out = await r.text();
@@ -302,11 +325,19 @@ workerRouter.post("/worker/approve", requireAdmin, async (req, res) => {
   }
 });
 
-// Optional: stop agent locally (doesn't assume worker has /stop; just stops observations)
 workerRouter.post("/worker/stop", requireAdmin, async (req, res) => {
   const { sessionId } = req.body || {};
   const sess = sessions.get(sessionId);
   if (!sess) return res.status(400).json({ error: "bad sessionId" });
+
+  // ✅ stop observations and agent logic
   if (sess.agent) sess.agent.running = false;
+
+  // ✅ stop backend->worker WS and prevent reconnect spam
+  disconnectWorker(sessionId, { disableReconnect: true });
+
+  // ✅ if you run LLM poller globally, stop it when nobody needs it
+  stopLlmStatusPolling?.();
+
   res.json({ ok: true });
 });

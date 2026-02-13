@@ -9,6 +9,7 @@ export function scheduleWorkerReconnect(sessionId) {
   const sess = sessions.get(sessionId);
   if (!sess) return;
 
+  if (sess.workerReconnectDisabled) return;
   if (sess.workerReconnectTimer) return; // already scheduled
 
   sess.workerBackoffMs = Math.min(Math.max(sess.workerBackoffMs || 500, 500) * 2, 8000);
@@ -30,11 +31,26 @@ function ensureAgentStruct(sess) {
       goal: "",
       model: "default",
       lastObsAt: 0,
-      pendingApprovals: new Map(),
+      pendingApprovals: new Map(), // stepId -> action
     };
   }
   if (!sess.agent.pendingApprovals) sess.agent.pendingApprovals = new Map();
   return sess.agent;
+}
+
+// Simple per-session action queue to avoid overlapping Playwright actions
+function enqueueAction(sess, fn) {
+  if (!sess._actionQueue) sess._actionQueue = Promise.resolve();
+  sess._actionQueue = sess._actionQueue.then(fn).catch(() => {});
+  return sess._actionQueue;
+}
+
+function normStepId(msg) {
+  const s = String(msg?.stepId || msg?.stepID || msg?.step || "").trim();
+  if (s) return s;
+  // deterministic fallback if worker forgot stepId
+  const ts = String(msg?.ts || Date.now());
+  return `step-${ts}`;
 }
 
 async function postActionResult({ sessionId, stepId, ok, error, note, data }) {
@@ -57,9 +73,59 @@ async function postActionResult({ sessionId, stepId, ok, error, note, data }) {
   }
 }
 
+function broadcastResultData(sess, sessionId, stepId, data) {
+  if (!data || !data.type) return;
+
+  // send a generic envelope so UI can display whatever it understands
+  broadcastToViewers(sess, {
+    type: "agent_action_data",
+    sessionId,
+    stepId,
+    data,
+    ts: Date.now(),
+  });
+
+  // keep backward-compatible specialized events (optional)
+  if (data.type === "screenshot_region") {
+    broadcastToViewers(sess, {
+      type: "agent_screenshot_region",
+      sessionId,
+      stepId,
+      ...data,
+      ts: Date.now(),
+    });
+  }
+
+  if (data.type === "extract_text") {
+    broadcastToViewers(sess, {
+      type: "agent_extract_text",
+      sessionId,
+      stepId,
+      selector: data.selector,
+      text: data.text,
+      ts: Date.now(),
+    });
+  }
+
+  if (data.type === "extract_html") {
+    broadcastToViewers(sess, {
+      type: "agent_extract_html",
+      sessionId,
+      stepId,
+      selector: data.selector,
+      html: data.html,
+      ts: Date.now(),
+    });
+  }
+}
+
 export async function ensureWorkerStream(sessionId) {
   const sess = sessions.get(sessionId);
-  if (!sess) throw new Error("unknown session");
+	if (!sess) throw new Error("unknown session");
+	
+	 if (sess.workerReconnectDisabled) {
+    throw new Error("worker reconnect disabled (stopped)");
+  }
 
   // Already connected?
   if (sess.workerWs && sess.workerWs.readyState === WebSocket.OPEN) return;
@@ -142,8 +208,7 @@ export async function ensureWorkerStream(sessionId) {
 
       const t = msg?.type;
 
-      // ---- 1) Forward worker events/logs to viewers (safe) ----
-      // NOTE: worker may emit "agent_event" for idle/running/done, errors, etc.
+      // ---- 1) Forward worker events/logs to viewers ----
       if (t === "log" || t === "agent_event" || t === "status" || t === "agent_status" || t === "agent_error") {
         broadcastToViewers(sess, { type: "agent_event", ...msg });
 
@@ -156,7 +221,7 @@ export async function ensureWorkerStream(sessionId) {
         return;
       }
 
-      // Optional compatibility: some older worker builds might emit this
+      // Optional compatibility: older worker builds
       if (t === "agent_done") {
         const agent = ensureAgentStruct(sess);
         agent.running = false;
@@ -172,18 +237,16 @@ export async function ensureWorkerStream(sessionId) {
         return;
       }
 
-      // ---- 2) Normalize propose messages (support old + new) ----
+      // ---- 2) Proposed action ----
       const isPropose = t === "propose_action" || t === "agent_proposed_action";
-
       if (!isPropose) return;
 
       const agent = ensureAgentStruct(sess);
 
-      const stepId = String(msg.stepId || msg.stepID || msg.step || "");
+      const stepId = normStepId(msg);
       const action = msg.action || null;
       const requiresApproval = !!msg.requiresApproval;
 
-      // Forward proposed action to frontend in a consistent format
       broadcastToViewers(sess, {
         type: "agent_proposed_action",
         sessionId,
@@ -194,7 +257,7 @@ export async function ensureWorkerStream(sessionId) {
         ts: Date.now(),
       });
 
-      // ---- 3) Store approvals if required ----
+      // ---- 3) Requires approval ----
       if (requiresApproval) {
         agent.pendingApprovals.set(stepId, action);
 
@@ -204,8 +267,6 @@ export async function ensureWorkerStream(sessionId) {
           stepId,
           ts: Date.now(),
         });
-
-        // Do not execute
         return;
       }
 
@@ -225,62 +286,56 @@ export async function ensureWorkerStream(sessionId) {
           ok: true,
           note: "ask_user forwarded to viewer",
         });
-
         return;
       }
 
-      // ---- 5) Execute immediately (autonomous actions) ----
-      try {
-        const execRes = await executeAgentAction(sess, action);
+      // ---- 5) Execute (serialized) ----
+      enqueueAction(sess, async () => {
+        try {
+          const execRes = await executeAgentAction(sess, action);
 
-        broadcastToViewers(sess, {
-          type: "agent_executed_action",
-          sessionId,
-          stepId,
-          action,
-          ts: Date.now(),
-        });
-
-        // If screenshot_region produced an image, forward it to viewers
-        if (execRes?.data?.type === "screenshot_region") {
           broadcastToViewers(sess, {
-            type: "agent_screenshot_region",
+            type: "agent_executed_action",
             sessionId,
             stepId,
-            ...execRes.data,
+            action,
             ts: Date.now(),
           });
+
+          if (execRes?.data) {
+            broadcastResultData(sess, sessionId, stepId, execRes.data);
+          }
+
+          await postActionResult({
+            sessionId,
+            stepId,
+            ok: true,
+            data: execRes?.data || null,
+          });
+        } catch (e) {
+          const err = String(e?.message || e);
+
+          broadcastToViewers(sess, {
+            type: "agent_action_failed",
+            sessionId,
+            stepId,
+            action,
+            error: err,
+            ts: Date.now(),
+          });
+
+          await postActionResult({
+            sessionId,
+            stepId,
+            ok: false,
+            error: err,
+            data: null,
+          });
         }
-
-        await postActionResult({
-          sessionId,
-          stepId,
-          ok: true,
-          data: execRes?.data || null,
-        });
-      } catch (e) {
-        const err = String(e?.message || e);
-
-        broadcastToViewers(sess, {
-          type: "agent_action_failed",
-          sessionId,
-          stepId,
-          action,
-          error: err,
-          ts: Date.now(),
-        });
-
-        await postActionResult({
-          sessionId,
-          stepId,
-          ok: false,
-          error: err,
-          data: null,
-        });
-      }
+      });
     });
 
-    // Wait for open or error/close (whichever comes first)
+    // Wait for open or error/close
     await new Promise((resolve, reject) => {
       const onOpen = () => {
         ws.off("error", onError);

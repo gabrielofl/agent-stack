@@ -17,10 +17,8 @@ function msSince(t0) {
   return Math.round(t1 - t0);
 }
 
-// Quick/rough token estimate (not exact, good for debugging)
 function approxTokens(s) {
   const t = String(s ?? "");
-  // English-ish heuristic: ~4 chars/token
   return Math.ceil(t.length / 4);
 }
 
@@ -44,10 +42,6 @@ function safeStr(s, maxLen) {
 
 /**
  * chatCompletion
- * - per-call timeout override (timeoutMs)
- * - per-call maxTokens (maxTokens)
- * - logs request/response in verbose debug mode
- *
  * meta: { sessionId, obsId, stepId, mode }
  */
 export async function chatCompletion({
@@ -67,14 +61,12 @@ export async function chatCompletion({
     model: "local",
     temperature,
     max_tokens: Math.max(8, Math.min(2048, Number(maxTokens || 320))),
-    // Hard stop at newline so the model cannot emit multiple steps.
-    // (Works with llama.cpp OpenAI-compatible endpoints.)
     stop: ["\n"],
     messages: [
       {
         role: "system",
         content:
-          "You are a precise browser automation agent. Output exactly one line. No markdown. No commentary. Do not output the URL. Start with a command like CLICK/SCROLL/TYPE/SELECT/WAIT/GOTO.",
+          "You are a precise browser automation agent. Output EXACTLY ONE LINE, no markdown, no commentary, no URL. The line must start with one command: CLICK, HOVER, HOVERSEL, TYPE, TYPESEL, SELECT, PRESS, SCROLL, WAIT, GOTO, SCREENSHOT, DONE, ASK.",
       },
       { role: "user", content: userPrompt },
     ],
@@ -121,21 +113,15 @@ export async function chatCompletion({
         meta,
       });
 
-      if (DBG.llmBody) {
-        dlogBig(sessionId, "LLM_RAW_HTTP_TEXT", text);
-      } else {
-        dlog(sessionId, "LLM_RAW_HTTP_SNIP", { snip: safeSlice(text, 400) });
-      }
+      if (DBG.llmBody) dlogBig(sessionId, "LLM_RAW_HTTP_TEXT", text);
+      else dlog(sessionId, "LLM_RAW_HTTP_SNIP", { snip: safeSlice(text, 400) });
     }
 
     if (!r.ok) {
       const parsedErr = safeJsonParse(text);
       const detail =
         parsedErr.ok
-          ? safeSlice(
-              parsedErr.value?.error?.message || parsedErr.value?.message || text,
-              500
-            )
+          ? safeSlice(parsedErr.value?.error?.message || parsedErr.value?.message || text, 500)
           : safeSlice(text, 500);
 
       throw new Error(`llama-server ${r.status}: ${detail}`);
@@ -148,18 +134,13 @@ export async function chatCompletion({
 
     const content = parsed.value?.choices?.[0]?.message?.content ?? "";
 
-    // --- ALWAYS PRINT RAW ASSISTANT CONTENT WITH A SEARCHABLE MARKER ---
-    // This is intentionally console.log so you can grep it easily in any environment.
-    // Keep it concise in case something weird happens.
     console.log(
-      `@@LLM_ASSISTANT_RAW@@ sessionId=${sessionId ?? "?"} stepId=${stepId ?? "?"} mode=${
-        meta?.mode ?? "?"
-      }\n${safeStr(content, 4000)}\n@@END_LLM_ASSISTANT_RAW@@`
+      `@@LLM_ASSISTANT_RAW@@ sessionId=${sessionId ?? "?"} stepId=${stepId ?? "?"} mode=${meta?.mode ?? "?"}\n` +
+        `${safeStr(content, 4000)}\n` +
+        `@@END_LLM_ASSISTANT_RAW@@`
     );
 
-    if (DBG.llm) {
-      dlogBig(sessionId, "LLM_CONTENT", content);
-    }
+    if (DBG.llm) dlogBig(sessionId, "LLM_CONTENT", content);
 
     return content;
   } catch (e) {

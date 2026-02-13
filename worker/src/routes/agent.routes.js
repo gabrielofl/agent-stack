@@ -1,13 +1,4 @@
-// src/routes/agent.routes.js  (WORKER - the one that owns AgentSession)
-//
-// Fixes:
-// - DO NOT setIdle() on ask_user (that nukes goal + causes weird behavior)
-// - Add "cooldown" + "inflight" guard so /observe can’t pile up requests
-// - Don’t push “Waiting for instructions…” on every observe tick (spam)
-// - Don’t emit proposed_action for "wait" (optional, but prevents pointless UI spam)
-// - De-dupe repeated identical proposed actions (esp. ask_user)
-// - Trust AgentSession.awaitingUser + backoff by honoring decideNextAction() returns
-//
+// src/routes/agent.routes.js (WORKER)
 import { Router } from "express";
 import { sessions } from "../services/agentStore.js";
 import { push } from "../services/streamHub.js";
@@ -16,7 +7,6 @@ import { DBG, dlog } from "../services/debugLog.js";
 
 export const agentRouter = Router();
 
-// ---- local helpers ----
 const OBS_DECISION_MIN_INTERVAL_MS = Number(process.env.OBS_DECISION_MIN_INTERVAL_MS || 1200);
 
 function now() {
@@ -36,35 +26,53 @@ function actionKey(action) {
   }
 }
 
+function ensureRouteState(sess) {
+  if (!sess._route) {
+    sess._route = {
+      deciding: false,
+      lastDecisionAt: 0,
+      lastIdleEventAt: 0,
+      lastProposedKey: "",
+      lastProposedAt: 0,
+    };
+  }
+  return sess._route;
+}
+
 /**
- * Start: creates an agent session in IDLE mode (waiting for instructions).
+ * Start: creates an agent session.
+ * If goal is provided -> RUNNING immediately (matches backend behavior)
+ * Otherwise -> IDLE (waiting for instruction)
  */
 agentRouter.post("/agent/start", (req, res) => {
-  const { sessionId, model } = req.body || {};
+  const { sessionId, model, goal } = req.body || {};
   if (!sessionId) return res.status(400).json({ error: "missing sessionId" });
 
-  if (DBG.agent) dlog(sessionId, "ROUTE_START", { model });
+  if (DBG.agent) dlog(sessionId, "ROUTE_START", { model, hasGoal: !!goal });
 
   const sess = new AgentSession({ sessionId, goal: "", model });
-
-  // route-level guards
-  sess._route = {
-    deciding: false, // inflight /observe decide
-    lastDecisionAt: 0, // throttle calls to decideNextAction
-    lastIdleEventAt: 0, // throttle “waiting…” events
-    lastProposedKey: "", // dedupe identical actions
-    lastProposedAt: 0,
-  };
-
+  ensureRouteState(sess);
   sessions.set(sessionId, sess);
 
-  push(sessionId, {
-    type: "agent_event",
-    sessionId,
-    status: "idle",
-    message: "Agent connected and waiting for instructions.",
-    ts: now(),
-  });
+  const g = String(goal ?? "").trim();
+  if (g) {
+    sess.setInstruction(g);
+    push(sessionId, {
+      type: "agent_event",
+      sessionId,
+      status: "running",
+      message: `Instruction received: ${safeSlice(g, 180)}`,
+      ts: now(),
+    });
+  } else {
+    push(sessionId, {
+      type: "agent_event",
+      sessionId,
+      status: "idle",
+      message: "Agent connected and waiting for instructions.",
+      ts: now(),
+    });
+  }
 
   res.json({ ok: true });
 });
@@ -79,6 +87,8 @@ agentRouter.post("/agent/instruction", (req, res) => {
   if (!sess) return res.status(404).json({ error: "no agent session (call /agent/start)" });
   if (!text || !String(text).trim()) return res.status(400).json({ error: "missing text" });
 
+  ensureRouteState(sess);
+
   if (DBG.agent) {
     dlog(sessionId, "ROUTE_INSTRUCTION", {
       text: safeSlice(text, 200),
@@ -87,16 +97,6 @@ agentRouter.post("/agent/instruction", (req, res) => {
   }
 
   sess.setInstruction(String(text).trim());
-
-  if (!sess._route) {
-    sess._route = {
-      deciding: false,
-      lastDecisionAt: 0,
-      lastIdleEventAt: 0,
-      lastProposedKey: "",
-      lastProposedAt: 0,
-    };
-  }
 
   push(sessionId, {
     type: "agent_event",
@@ -116,10 +116,12 @@ agentRouter.post("/agent/instruction", (req, res) => {
  * - If DONE: do nothing
  */
 agentRouter.post("/agent/observe", async (req, res) => {
-  const { sessionId, obsId, url, viewport, elements, ts } = req.body || {};
+  const { sessionId, obsId, url, img, imgTs, viewport, elements, ts } = req.body || {};
   const sess = sessions.get(sessionId);
 
   if (!sess) return res.status(404).json({ error: "no agent session (call /agent/start)" });
+
+  ensureRouteState(sess);
 
   sess.setObservation({ obsId, url, viewport, elements, ts });
 
@@ -132,19 +134,8 @@ agentRouter.post("/agent/observe", async (req, res) => {
     });
   }
 
-  if (!sess._route) {
-    sess._route = {
-      deciding: false,
-      lastDecisionAt: 0,
-      lastIdleEventAt: 0,
-      lastProposedKey: "",
-      lastProposedAt: 0,
-    };
-  }
-
-  // 1) If idle, DO NOT keep pushing idle events every tick
+  // 1) IDLE -> throttle idle spam
   if (sess.status === "idle") {
-    if (DBG.agent) dlog(sessionId, "OBS_SKIP_IDLE", {});
     const t = now();
     if (t - sess._route.lastIdleEventAt > 15_000) {
       sess._route.lastIdleEventAt = t;
@@ -159,22 +150,17 @@ agentRouter.post("/agent/observe", async (req, res) => {
     return res.json({ ok: true });
   }
 
-  // 2) If done, do nothing
+  // 2) DONE -> do nothing
   if (sess.status === "done") {
-    if (DBG.agent) dlog(sessionId, "OBS_SKIP_DONE", {});
     return res.json({ ok: true });
   }
 
-  // 3) Throttle /observe-driven decisions + prevent concurrent decides
+  // 3) Throttle decideNextAction + prevent concurrent decides
   const t = now();
 
-  if (sess._route.deciding) {
-    if (DBG.agent) dlog(sessionId, "OBS_SKIP_INFLIGHT", {});
-    return res.json({ ok: true });
-  }
+  if (sess._route.deciding) return res.json({ ok: true });
 
   if (t - sess._route.lastDecisionAt < OBS_DECISION_MIN_INTERVAL_MS) {
-    if (DBG.agent) dlog(sessionId, "OBS_SKIP_THROTTLED", { sinceMs: t - sess._route.lastDecisionAt });
     return res.json({ ok: true });
   }
 
@@ -183,7 +169,11 @@ agentRouter.post("/agent/observe", async (req, res) => {
 
   try {
     const decision = await sess.decideNextAction();
-    const stepId = `step-${++sess.step}`;
+
+    // IMPORTANT:
+    // AgentSession already increments sess.step for real LLM attempts.
+    // Use its current step as the stepId so action_result correlates.
+    const stepId = `step-${Number(sess.step || 0)}`;
 
     if (DBG.agent) {
       dlog(sessionId, "DECIDE_RESULT", {
@@ -207,16 +197,14 @@ agentRouter.post("/agent/observe", async (req, res) => {
       return res.json({ ok: true });
     }
 
-    // Do not spam UI with internal pacing waits
+    // Skip UI spam for internal waits
     if (decision?.action?.type === "wait") {
-      if (DBG.agent) dlog(sessionId, "DECIDE_RETURN_WAIT", decision.action);
       return res.json({ ok: true });
     }
 
-    // De-dupe identical proposed actions for a short window
+    // De-dupe identical proposed actions for short window
     const key = actionKey(decision.action);
     if (key === sess._route.lastProposedKey && now() - sess._route.lastProposedAt < 10_000) {
-      if (DBG.agent) dlog(sessionId, "PROPOSED_DEDUPED", { withinMs: now() - sess._route.lastProposedAt });
       return res.json({ ok: true });
     }
     sess._route.lastProposedKey = key;
@@ -228,12 +216,14 @@ agentRouter.post("/agent/observe", async (req, res) => {
       stepId,
       action: decision.action,
       explanation: safeSlice(decision.explanation || "", 300),
+      requiresApproval: !!decision.requiresApproval,
       ts: now(),
     });
 
-    // If the action is ask_user, DO NOT setIdle().
-    // AgentSession sets awaitingUser internally and will return wait until user responds.
+    // ask_user: mark awaitingUser so AgentSession can pace itself
     if (decision?.action?.type === "ask_user") {
+      sess.awaitingUser = true;
+
       push(sessionId, {
         type: "agent_event",
         sessionId,
@@ -257,6 +247,7 @@ agentRouter.post("/agent/observe", async (req, res) => {
     push(sessionId, {
       type: "agent_event",
       sessionId,
+      status: "error",
       error: String(e?.message || e),
       ts: now(),
     });
@@ -267,8 +258,8 @@ agentRouter.post("/agent/observe", async (req, res) => {
 });
 
 /**
- * Correction: treat as guidance while RUNNING.
- * Also unpauses AgentSession.awaitingUser via addCorrection() (already implemented).
+ * Correction: guidance while RUNNING.
+ * Also unpauses AgentSession.awaitingUser via addCorrection() (your AgentSession does this).
  */
 agentRouter.post("/agent/correction", (req, res) => {
   const { sessionId, text, mode } = req.body || {};
@@ -288,8 +279,17 @@ agentRouter.post("/agent/correction", (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * Action result: backend sends result of executing the proposed action.
+ * We:
+ * - forward to UI stream
+ * - feed failures back into corrections so the agent can recover generically
+ * - feed extracted text/html back into corrections so the agent can "read" pages
+ */
 agentRouter.post("/agent/action_result", (req, res) => {
-  const { sessionId, stepId, ok, error } = req.body || {};
+  const { sessionId, stepId, ok, error, note, data } = req.body || {};
+  const sess = sessions.get(sessionId);
+
   if (sessionId && stepId) {
     push(sessionId, {
       type: "agent_event",
@@ -298,8 +298,39 @@ agentRouter.post("/agent/action_result", (req, res) => {
       stepId,
       ok: !!ok,
       error: error || null,
+      note: note || null,
+      data: data ?? null,
       ts: now(),
     });
   }
+
+  // Feed the agent with what happened (lightweight + capped)
+  if (sess) {
+    if (!ok && error) {
+      sess.addCorrection({
+        mode: "system",
+        ts: now(),
+        text: `Previous action failed: ${safeSlice(error, 240)}. Choose a different approach (different element, scroll, use selector-based action, etc).`,
+      });
+    }
+
+    // If we extracted readable text/html, give it to the agent (truncated)
+    if (ok && data && typeof data === "object") {
+      if (data.type === "extract_text" && data.text) {
+        sess.addCorrection({
+          mode: "context",
+          ts: now(),
+          text: `Extracted text (${safeSlice(data.selector, 80)}): ${safeSlice(data.text, 700)}`,
+        });
+      } else if (data.type === "extract_html" && data.html) {
+        sess.addCorrection({
+          mode: "context",
+          ts: now(),
+          text: `Extracted HTML (${safeSlice(data.selector, 80)}): ${safeSlice(data.html, 700)}`,
+        });
+      }
+    }
+  }
+
   res.json({ ok: true });
 });
