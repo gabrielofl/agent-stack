@@ -229,7 +229,7 @@ function handleReconnect() {
 }
 
 async function stopAgentOnBackend(sessionId) {
-  return postAdminJson("/worker/stop", { sessionId });
+  return api.stopAgent(sessionId);
 }
 
 async function handleStop() {

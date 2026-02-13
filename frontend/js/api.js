@@ -62,6 +62,20 @@ async startAgent(sessionId, model = "default") {
   const text = await res.text();
   if (!res.ok) throw new Error(`worker/start ${res.status}: ${text.slice(0,200)}`);
   return JSON.parse(text);
+	},
+
+async stopAgent(sessionId) {
+  const res = await fetch(`${this.base()}/worker/stop`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${state.adminToken}`,
+    },
+    body: JSON.stringify({ sessionId }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`worker/stop ${res.status}: ${text.slice(0,200)}`);
+  return text ? JSON.parse(text) : { ok: true };
 },
   
   async correction(sessionId, text, mode = "override") {
