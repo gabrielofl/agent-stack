@@ -107,25 +107,158 @@ export function attachViewerWs(server) {
         return;
       }
 
-      try {
-        if (msg.type === "user_click") {
-          const { x, y, button } = msg;
-          await sess.page.mouse.click(x, y, { button: button || "left" });
-          ws.send(JSON.stringify({ type: "ack", action: "user_click", x, y }));
-          return;
-        }
+		try {
+		  
+// ✅ USER ACTIONS (serialized via enqueueAction)
+if (msg.type === "user_press_key") {
+  const key = msg.key || "Enter";
 
-        if (msg.type === "user_type") {
-          await sess.page.keyboard.type(msg.text || "");
-          ws.send(JSON.stringify({ type: "ack", action: "user_type" }));
-          return;
-        }
+  enqueueAction(sess, async () => {
+    try {
+      await sess.page.keyboard.press(key);
+      ws.send(JSON.stringify({ type: "ack", action: "user_press_key", key }));
+    } catch (e) {
+      ws.send(JSON.stringify({
+        type: "error",
+        message: "user_press_key_failed",
+        detail: String(e?.message || e),
+      }));
+    }
+  });
 
-        if (msg.type === "goto") {
-          await sess.page.goto(msg.url, { waitUntil: "domcontentloaded", timeout: 60000 });
-          ws.send(JSON.stringify({ type: "ack", action: "goto", url: msg.url }));
-          return;
-        }
+  return;
+}
+
+if (msg.type === "go_back") {
+  enqueueAction(sess, async () => {
+    try {
+      const resp = await sess.page.goBack({ waitUntil: "domcontentloaded", timeout: 60000 });
+
+      if (!resp) {
+        ws.send(JSON.stringify({ type: "ack", action: "go_back", note: "no_history" }));
+      } else {
+        ws.send(JSON.stringify({ type: "ack", action: "go_back" }));
+      }
+    } catch (e) {
+      ws.send(JSON.stringify({
+        type: "error",
+        message: "go_back_failed",
+        detail: String(e?.message || e),
+      }));
+    }
+  });
+
+  return;
+}
+
+if (msg.type === "user_click") {
+  const { x, y, button } = msg;
+
+  enqueueAction(sess, async () => {
+    try {
+      await sess.page.mouse.click(Number(x), Number(y), { button: button || "left" });
+      ws.send(JSON.stringify({ type: "ack", action: "user_click", x, y }));
+    } catch (e) {
+      ws.send(JSON.stringify({
+        type: "error",
+        message: "user_click_failed",
+        detail: String(e?.message || e),
+      }));
+    }
+  });
+
+  return;
+}
+			
+			if (msg.type === "user_scroll") {
+  const dx = Number(msg.dx ?? 0);
+  const dy = Number(msg.dy ?? 0);
+
+  enqueueAction(sess, async () => {
+    try {
+      // clamp to keep it sane
+      const cdx = Math.max(-2000, Math.min(2000, Math.round(dx)));
+      const cdy = Math.max(-4000, Math.min(4000, Math.round(dy)));
+
+      await sess.page.mouse.wheel(cdx, cdy);
+      ws.send(JSON.stringify({ type: "ack", action: "user_scroll", dx: cdx, dy: cdy }));
+    } catch (e) {
+      ws.send(JSON.stringify({
+        type: "error",
+        message: "user_scroll_failed",
+        detail: String(e?.message || e),
+      }));
+    }
+  });
+
+  return;
+}
+
+// 			if (msg.type === "user_hover") {
+//   const x = Number(msg.x);
+//   const y = Number(msg.y);
+//   if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+//   // Throttle hover to avoid spamming Playwright and clogging action queue
+//   const now = Date.now();
+//   if (!sess._hover) sess._hover = { lastAt: 0, pending: null, timer: null };
+
+//   // store latest hover coords
+//   sess._hover.pending = { x: Math.round(x), y: Math.round(y) };
+
+//   // run at most every 80ms (adjust as you like)
+//   const MIN_MS = 80;
+//   if (now - sess._hover.lastAt < MIN_MS) return;
+
+//   sess._hover.lastAt = now;
+
+//   // execute immediately (not queued)
+//   const { x: hx, y: hy } = sess._hover.pending;
+//   sess._hover.pending = null;
+
+//   sess.page.mouse.move(hx, hy).catch(() => {});
+//   return;
+// }
+
+
+if (msg.type === "user_type") {
+  const text = msg.text || "";
+
+  enqueueAction(sess, async () => {
+    try {
+      await sess.page.keyboard.type(text);
+      ws.send(JSON.stringify({ type: "ack", action: "user_type" }));
+    } catch (e) {
+      ws.send(JSON.stringify({
+        type: "error",
+        message: "user_type_failed",
+        detail: String(e?.message || e),
+      }));
+    }
+  });
+
+  return;
+}
+
+if (msg.type === "goto") {
+  const toUrl = msg.url;
+
+  enqueueAction(sess, async () => {
+    try {
+      await sess.page.goto(toUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+      ws.send(JSON.stringify({ type: "ack", action: "goto", url: toUrl }));
+    } catch (e) {
+      ws.send(JSON.stringify({
+        type: "error",
+        message: "goto_failed",
+        detail: String(e?.message || e),
+      }));
+    }
+  });
+
+  return;
+}
+
 
         if (msg.type === "close_session") {
           await closeSession(sessionId);

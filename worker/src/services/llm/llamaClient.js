@@ -8,6 +8,14 @@ import {
 } from "../../config/env.js";
 import { DBG, dlog, dlogBig } from "../debugLog.js";
 
+const inFlightBySession = new Map(); // sessionId -> count
+let inFlightGlobal = 0;
+
+export function llmIsBusy(sessionId) {
+  if (sessionId) return (inFlightBySession.get(sessionId) || 0) > 0;
+  return inFlightGlobal > 0;
+}
+
 function baseNow() {
   return globalThis.performance?.now ? performance.now() : Date.now();
 }
@@ -51,7 +59,11 @@ export async function chatCompletion({
   timeoutMs = LLM_FAST_TIMEOUT_MS || LLM_TIMEOUT_MS,
   meta = {},
 }) {
-  const sessionId = meta?.sessionId;
+  const sessionId = meta?.sessionId || "unknown";
+  const key = sessionId;
+
+  inFlightGlobal++;
+  inFlightBySession.set(key, (inFlightBySession.get(key) || 0) + 1);
   const stepId = meta?.stepId;
 
   const timeout = Number(timeoutMs || LLM_TIMEOUT_MS);
@@ -161,6 +173,10 @@ export async function chatCompletion({
     }
     throw e;
   } finally {
+	  inFlightGlobal = Math.max(0, inFlightGlobal - 1);
+    const next = Math.max(0, (inFlightBySession.get(key) || 1) - 1);
+    if (next === 0) inFlightBySession.delete(key);
+    else inFlightBySession.set(key, next);
     clearTimeout(timer);
     if (DBG.llm) dlog(sessionId, "LLM_CALL_END", { meta });
   }

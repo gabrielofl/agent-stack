@@ -341,7 +341,13 @@ async function dispatchChatCommand(raw) {
       case "/type": return handleType(args.join(" "));
       case "/click": return handleClick(args[0], args[1]);
       case "/scroll": return handleScroll(args[0], args[1]);
-      case "/key": return handleKey(args.join(" "));
+	  case "/key": return handleKey(args.join(" "));
+	  case "/back":
+		echoUser("/back");
+		return wsClient.send({ type: "go_back" });
+	  case "/enter":
+		echoUser("/enter");
+		return wsClient.send({ type: "user_press_key", key: "Enter" });
 
       default:
         return handleInstruction(line);
@@ -464,6 +470,16 @@ ui.el("btnAsk").onclick = async () => {
     ui.pushUserFeed(`System: correction failed — ${String(e?.message || e)}`, "error");
   }
 };
+
+ui.el("btnBack")?.addEventListener("click", () => {
+  echoUser("/back");
+  wsClient.send({ type: "go_back" });
+});
+
+ui.el("btnEnter")?.addEventListener("click", () => {
+  echoUser("/enter");
+  wsClient.send({ type: "user_press_key", key: "Enter" });
+});
 
 // -------------------- Viewer interactions --------------------
 ui.screenEl.addEventListener("click", (e) => {

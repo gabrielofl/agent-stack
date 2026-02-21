@@ -8,22 +8,29 @@ export const state = {
   bytes: 0,
   lastFrameAt: 0,
   lastFrameUrl: "",
+
   lastHttp: "",
+  lastHealthOk: false,
+  lastWs: "",       // ✅ add
   lastError: "",
   fpsWindow: [],
+
   wsReconnectAttempt: 0,
   wsReconnectTimer: null,
 
   isAdmin: false,
   adminToken: localStorage.getItem("adminToken") || "",
+
   lastProposedAction: null,
   lastExecutedAction: null,
   lastElements: [],
   lastProposedAt: 0,
   lastExecutedAt: 0,
-  
+
   pendingStepId: "",
   pendingAction: null,
   lastQuestion: "",
 
+  controlMode: "auto",
+  manualReason: "",
 };

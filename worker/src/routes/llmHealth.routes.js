@@ -2,11 +2,14 @@
 import { Router } from "express";
 import { fetchFn } from "../services/fetch.js";
 import { LLAMA_BASE_URL } from "../config/env.js";
+import { llmIsBusy } from "../services/llm/llamaClient.js";
 
 export const llmHealthRouter = Router();
 
 // ---------------- SSE broadcast (frontend admin console) ----------------
 const sseClients = new Set();
+let lastResult = null;
+let lastAt = 0;
 
 function sseHeaders(res) {
   res.status(200);
@@ -40,6 +43,21 @@ llmHealthRouter.get("/health/llm/stream", (req, res) => {
 
   // Acknowledge connection
   sseSend(res, "connected", { ok: true, ts: Date.now() });
+
+  // Optionally push the last known status immediately (nice UX)
+  if (lastResult) {
+    sseSend(res, "llm_health", {
+      type: "llm_health",
+      ts: lastResult.ts ?? Date.now(),
+      llamaBaseUrl: lastResult.llamaBaseUrl,
+      level: lastResult.level,
+      ok: lastResult.ok,
+      summary: lastResult.summary,
+      models: lastResult.models,
+      chat: lastResult.chat,
+      cached: true,
+    });
+  }
 
   sseClients.add(res);
 
@@ -91,7 +109,6 @@ function serializeCause(cause) {
       stack: trim(cause.stack, 1200),
     };
   }
-  // unknown object
   try {
     return JSON.parse(JSON.stringify(cause));
   } catch {
@@ -102,8 +119,6 @@ function serializeCause(cause) {
 function serializeError(e) {
   if (!e) return { message: "unknown_error" };
   if (typeof e === "string") return { message: e };
-
-  // Node fetch often throws TypeError("fetch failed") with e.cause containing the real reason
   return {
     name: e.name,
     message: e.message,
@@ -121,12 +136,14 @@ function levelFrom(result) {
 }
 
 llmHealthRouter.get("/health/llm", async (req, res) => {
+  // lightweight cache so your frontend polling doesn't hammer llama
+  if (Date.now() - lastAt < 1000 && lastResult) return res.json(lastResult);
+
   const base = (LLAMA_BASE_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
 
   const debug = String(req.query?.debug || "").toLowerCase();
   const debugOn = debug === "1" || debug === "true" || debug === "yes" || debug === "on";
 
-  // You can also force broadcasting via ?broadcast=1 (optional)
   const broadcastQ = String(req.query?.broadcast || "").toLowerCase();
   const broadcastOn = broadcastQ === "1" || broadcastQ === "true" || broadcastQ === "yes" || broadcastQ === "on";
 
@@ -152,8 +169,58 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
       request: null,
       responseText: null,
       responseJson: null,
+      skipped: false,
     },
     ts: Date.now(),
+  };
+
+  const finalizeAndReturn = () => {
+    // store cache
+    lastResult = result;
+    lastAt = Date.now();
+
+    // broadcast a single health event
+    const event = {
+      type: "llm_health",
+      ts: result.ts,
+      llamaBaseUrl: base,
+      level: result.level,
+      ok: result.ok,
+      summary: result.summary,
+      busy: !!result.busy,
+      models: {
+        ok: result.models.ok,
+        status: result.models.status,
+        latencyMs: result.models.latencyMs,
+        count: result.models.count,
+        modelId: debugOn ? result.models.modelId : undefined,
+        error: result.models.error ?? undefined,
+        responseText: debugOn ? result.models.responseText : undefined,
+      },
+      chat: {
+        ok: result.chat.ok,
+        status: result.chat.status,
+        latencyMs: result.chat.latencyMs,
+        slow: result.chat.slow,
+        sample: result.chat.sample,
+        skipped: result.chat.skipped,
+        responseText: result.chat.responseText,
+        error: result.chat.error,
+        request: debugOn ? result.chat.request : undefined,
+        responseJson: debugOn ? result.chat.responseJson : undefined,
+      },
+      health: {
+        ok: result.health.ok,
+        status: result.health.status,
+        latencyMs: result.health.latencyMs,
+        error: result.health.error ?? undefined,
+      },
+    };
+
+    if (sseClients.size > 0 || broadcastOn || debugOn) broadcast("llm_health", event);
+    console.log("[LLM_HEALTH]", JSON.stringify(event));
+
+    return res.status(200).json(result);
   };
 
   async function getWithTimeout(url, timeoutMs) {
@@ -189,7 +256,6 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     }
   }
 
-  // Prefer /v1/models as "reachability + readiness" probe
   async function probe(url, timeoutMs) {
     try {
       const { r, latencyMs } = await getWithTimeout(url, timeoutMs);
@@ -202,82 +268,42 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     }
   }
 
+  // ---------------- (1) models probe: always do this ----------------
   const modelsProbe = await probe(`${base}/v1/models`, MODELS_TIMEOUT_MS);
 
-  // If we cannot even connect -> truly down/unreachable
+  // cannot connect at all
   if (!modelsProbe.ok) {
+    result.health.ok = false;
     result.health.error = modelsProbe.error || { message: "fetch_failed" };
     result.summary = "llama unreachable";
-    result.level = levelFrom(result);
-
-    // Broadcast a concise event so you see the real error in frontend console.
-    const event = {
-      type: "llm_health",
-      ts: result.ts,
-      llamaBaseUrl: base,
-      level: result.level,
-      ok: result.ok,
-      summary: result.summary,
-      models: null,
-      chat: null,
-      error: result.health.error,
-    };
-
-    // Always broadcast if there are SSE clients OR if broadcastOn/debugOn
-    if (sseClients.size > 0 || broadcastOn || debugOn) {
-      broadcast("llm_health", event);
-    }
-
-    console.log("[LLM_HEALTH]", JSON.stringify(event));
-    return res.status(200).json(result);
+    result.level = "down";
+    result.ok = false;
+    return finalizeAndReturn();
   }
 
-  // Connection exists (we got an HTTP status back)
+  // reachability ok (we got an HTTP status)
   result.health.ok = true;
   result.health.status = modelsProbe.status;
   result.health.latencyMs = modelsProbe.latencyMs;
 
-  // If /v1/models returns 503, llama is up but still loading
+  // llama up but loading model
   if (modelsProbe.status === 503) {
     result.models.ok = false;
     result.models.status = 503;
     result.models.latencyMs = modelsProbe.latencyMs;
     result.models.error = "HTTP 503 (server loading model)";
+    if (debugOn) result.models.responseText = trim(modelsProbe.text, 2000);
+
     result.summary = "LLM loading (llama up, model not ready yet)";
     result.level = "degraded";
     result.ok = false;
-
-    if (debugOn) {
-      result.models.responseText = trim(modelsProbe.text, 2000);
-    }
-
-    const event = {
-      type: "llm_health",
-      ts: result.ts,
-      llamaBaseUrl: base,
-      level: result.level,
-      ok: result.ok,
-      summary: result.summary,
-      models: {
-        status: result.models.status,
-        latencyMs: result.models.latencyMs,
-        error: result.models.error,
-        responseText: debugOn ? result.models.responseText : undefined,
-      },
-      chat: null,
-    };
-
-    if (sseClients.size > 0 || broadcastOn || debugOn) {
-      broadcast("llm_health", event);
-    }
-
-    console.log("[LLM_HEALTH]", JSON.stringify(event));
-    return res.status(200).json(result);
+    return finalizeAndReturn();
   }
 
-  // Parse /v1/models if it succeeded
+  // parse /v1/models if it succeeded
   let modelId = "local";
   if (!modelsProbe.httpOk) {
+    result.models.ok = false;
     result.models.status = modelsProbe.status;
     result.models.latencyMs = modelsProbe.latencyMs;
     result.models.error = `HTTP ${modelsProbe.status}: ${trim(modelsProbe.text, 200)}`;
@@ -303,7 +329,26 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     result.models.responseText = trim(modelsProbe.text, 2000);
   }
 
-  // ---- Chat probe ----
+  // ---------------- (2) if busy -> skip chat probe ----------------
+  const busy = llmIsBusy(); // global busy (any session)
+  if (busy) {
+    result.busy = true;
+    result.chat.ok = true;
+    result.chat.skipped = true;
+    result.chat.status = 0;
+    result.chat.latencyMs = 0;
+    result.chat.slow = false;
+    result.chat.sample = "skipped (llm busy)";
+    result.chat.error = null;
+
+    // Decide without chat probe
+    result.level = result.models.ok ? "ready" : "degraded";
+    result.ok = result.level === "ready";
+    result.summary = "LLM ready (chat probe skipped: busy)";
+    return finalizeAndReturn();
+  }
+
+  // ---------------- (3) chat probe ----------------
   const chatBody = {
     model: modelId,
     temperature: 0,
@@ -326,11 +371,8 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     result.chat.slow = latencyMs >= CHAT_SLOW_MS;
 
     const text = await safeText(r);
-
-    // IMPORTANT: keep this even when debug is off, so we can broadcast it
     result.chat.responseText = trim(text, 4000);
 
-    // Parse JSON if possible
     let parsedJson = null;
     try {
       parsedJson = text ? JSON.parse(text) : null;
@@ -344,6 +386,7 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     }
 
     if (!r.ok) {
+      result.chat.ok = false;
       result.chat.error = `HTTP ${r.status}: ${trim(text, 300)}`;
     } else {
       result.chat.ok = true;
@@ -357,9 +400,11 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     }
   } catch (e) {
     const err = serializeError(e);
-    result.chat.error = e?.name === "AbortError" ? "timeout" : err;
+    result.chat.ok = false;
+    result.chat.error = e?.name === "AbortError" ? { message: "timeout" } : err;
   }
 
+  // ---------------- compute level/summary ----------------
   result.level = levelFrom(result);
   result.ok = result.level === "ready";
 
@@ -371,41 +416,5 @@ llmHealthRouter.get("/health/llm", async (req, res) => {
     result.summary = "LLM down";
   }
 
-  // ---------------- broadcast to frontend admin console ----------------
-  const event = {
-    type: "llm_health",
-    ts: result.ts,
-    llamaBaseUrl: base,
-    level: result.level,
-    ok: result.ok,
-    summary: result.summary,
-    models: {
-      ok: result.models.ok,
-      status: result.models.status,
-      latencyMs: result.models.latencyMs,
-      count: result.models.count,
-      modelId: debugOn ? result.models.modelId : undefined,
-    },
-    chat: {
-      ok: result.chat.ok,
-      status: result.chat.status,
-      latencyMs: result.chat.latencyMs,
-      slow: result.chat.slow,
-      sample: result.chat.sample,
-      // Always include responseText (trimmed) so you can see the real LLM output in the frontend console
-      responseText: result.chat.responseText,
-      error: result.chat.error,
-      // Only include request/JSON when debug=1
-      request: debugOn ? result.chat.request : undefined,
-      responseJson: debugOn ? result.chat.responseJson : undefined,
-    },
-  };
-
-  if (sseClients.size > 0 || broadcastOn || debugOn) {
-    broadcast("llm_health", event);
-  }
-
-  console.log("[LLM_HEALTH]", JSON.stringify(event));
-
-  return res.status(200).json(result);
+  return finalizeAndReturn();
 });
