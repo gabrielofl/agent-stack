@@ -26,6 +26,7 @@ import {
   hashElements,
 } from "./pageHelpers.js";
 import { ensureWorkerStream } from "./workerStream.js";
+import { loadStorageState, saveStorageState } from "./storageStateBlob.js";
 
 function withTimeout(ms) {
   const controller = new AbortController();
@@ -45,7 +46,8 @@ export async function closeSession(sessionId) {
   try { clearInterval(sess._frameInterval); } catch {}
   try { if (sess.workerReconnectTimer) clearTimeout(sess.workerReconnectTimer); } catch {}
   try { if (sess.workerWs && sess.workerWs.readyState === WebSocket.OPEN) sess.workerWs.close(); } catch {}
-
+  try { if (sess._persistTimer) clearInterval(sess._persistTimer); } catch {}
+  try { await saveStorageState(sessionId, sess.context); } catch {}
   try {
     for (const ws of sess.clients) {
       try { ws.close(); } catch {}
@@ -59,21 +61,28 @@ export async function closeSession(sessionId) {
 }
 
 export async function createSession({ sessionId, startUrl }) {
+	const storageState = await loadStorageState(sessionId);
+
   const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    headless: false,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
 
   const viewport = { width: 1280, height: 720, deviceScaleFactor: 1 };
 
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
-    deviceScaleFactor: viewport.deviceScaleFactor,
+	deviceScaleFactor: viewport.deviceScaleFactor,
+	storageState: storageState || undefined,
   });
 
   const page = await context.newPage();
   await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
 
+	const persistTimer = setInterval(() => {
+    saveStorageState(sessionId, context).catch(() => {});
+	}, 100_000);
+	
   const clients = new Set();
 
   sessions.set(sessionId, {
@@ -84,7 +93,8 @@ export async function createSession({ sessionId, startUrl }) {
     clients,
 
     interval: null,
-    _frameInterval: null,
+	_frameInterval: null,
+	_persistTimer: persistTimer,
 
     agent: null,
     workerWs: null,
