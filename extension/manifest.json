@@ -1,0 +1,65 @@
+{
+  "manifest_version": 3,
+  "name": "Wiguru AD",
+  "version": "2.1.0",
+  "description": "Collect images from a site and upload to your Google Drive with filtering, pagination, and duplicate detection.",
+  "permissions": [
+    "identity",
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*",
+    "https://www.googleapis.com/*",
+    "https://content.googleapis.com/*",
+    "https://YOUR-AZURE-APP.azurewebsites.net/*"
+  ],
+  "oauth2": {
+    "client_id": "YOUR_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.file"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "assets/icon.png",
+    "32": "assets/icon.png",
+    "48": "assets/icon.png",
+    "128": "assets/icon.png"
+  },
+  "action": {
+    "default_title": "Upload images to Drive",
+    "default_icon": {
+      "16": "assets/icon.png",
+      "24": "assets/icon.png",
+      "32": "assets/icon.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "panel.html",
+        "panel.css",
+        "assets/wiguru-logo.svg",
+        "src/config.js",
+        "src/panel/*.js",
+        "src/auth/*.js",
+        "src/services/*.js"
+      ],
+      "matches": ["https://*/*", "http://*/*"]
+    }
+  ]
+}

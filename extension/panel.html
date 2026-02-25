@@ -1,0 +1,186 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+      content="script-src 'self'; object-src 'self'; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; connect-src https: http:;" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wiguru — Site Images</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <img class="logo" src="./assets/wiguru-logo.svg" alt="Wiguru" />
+          <div>
+            <div class="title">AD Intelligence Agent</div>
+            <div class="subtitle">Powered by <span class="accent">Wiguru</span></div>
+          </div>
+        </div>
+
+        <div class="top-actions">
+          <button id="minBtn" class="chip chip-btn" title="Minimize">—</button>
+          <button id="closeBtn" class="chip chip-btn" title="Close">✕</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- SCREEN 1: AUTH -->
+      <section id="authScreen">
+        <section id="authContainer" class="card">
+          <div class="statusbar">
+            <div class="status-title">Account</div>
+            <div class="status-actions">
+              <span id="authStatus" class="chip">Not signed in</span>
+            </div>
+          </div>
+
+          <!-- Login / Register form -->
+          <div id="authLoggedOut">
+            <div class="grid">
+              <div class="field">
+                <label>Email</label>
+                <input id="authEmail" type="email" placeholder="you@example.com" />
+              </div>
+
+              <div class="field">
+                <label>Password</label>
+                <input id="authPassword" type="password" placeholder="••••••••" />
+              </div>
+
+              <!-- Optional name field for register -->
+              <div class="field hidden" id="authNameField">
+                <label>Name (for register)</label>
+                <input id="authName" type="text" placeholder="Your name" />
+              </div>
+
+              <div class="btnrow">
+                <button id="loginBtn" class="btn">Login</button>
+                <button id="registerBtn" class="btn btn-primary">Register</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Logged-in auth summary (can be hidden if you prefer direct app switch) -->
+          <div id="authLoggedIn" class="hidden">
+            <div class="grid">
+              <div class="field">
+                <label>Signed in as</label>
+                <div id="authUserLabel" class="status">—</div>
+              </div>
+
+              <div class="btnrow">
+                <button id="continueBtn" class="btn btn-primary">Continue</button>
+                <button id="logoutBtn" class="btn">Logout</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <!-- SCREEN 2: APP (hidden until authenticated) -->
+      <section id="appScreen" class="hidden">
+        <!-- Controls -->
+        <section class="card">
+          <div class="btnrow">
+            <button id="pickBtn" class="btn">Pick image on page</button>
+            <button id="shotBtn" class="btn">Screenshot area</button>
+          </div>
+
+          <div class="btnrow">
+            <button id="scrapeBtn" class="btn btn-primary">Collect + Upload + Preview Transform</button>
+          </div>
+
+          <details id="advancedDetails" class="advanced">
+            <summary>
+              <span>Advanced options</span>
+              <span class="muted">filters • pagination • types</span>
+            </summary>
+
+            <div class="grid">
+              <div class="field">
+                <label>Image selector</label>
+                <input id="selector" value="img" placeholder="img" />
+              </div>
+
+              <div class="field">
+                <label>Pagination “Next” selector</label>
+                <input id="nextSelector" placeholder="a.next, button.next" />
+                <div class="hint">If set, the extension clicks next and collects images across pages.</div>
+              </div>
+
+              <div class="grid2">
+                <div class="field">
+                  <label>Max pages</label>
+                  <input id="maxPages" type="number" min="1" max="100" value="1" />
+                </div>
+                <div class="field">
+                  <label>Wait after next (ms)</label>
+                  <input id="pageWaitMs" type="number" min="500" max="20000" value="2500" />
+                </div>
+              </div>
+
+              <div class="grid2">
+                <div class="field">
+                  <label>Min width (px)</label>
+                  <input id="minWidth" type="number" min="1" value="64" />
+                </div>
+                <div class="field">
+                  <label>Min height (px)</label>
+                  <input id="minHeight" type="number" min="1" value="64" />
+                </div>
+              </div>
+
+              <div class="grid2">
+                <div class="field">
+                  <label>Min file size (KB)</label>
+                  <input id="minKb" type="number" min="0" value="10" />
+                </div>
+
+                <div class="field">
+                  <label>Allowed types</label>
+                  <select id="types" multiple size="4">
+                    <option value="image/jpeg" selected>JPEG</option>
+                    <option value="image/png" selected>PNG</option>
+                    <option value="image/webp" selected>WEBP</option>
+                    <option value="image/gif">GIF</option>
+                    <option value="image/svg+xml">SVG</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>Optional Drive parent folder ID</label>
+                <input id="parentFolderId" placeholder="Leave blank to use My Drive root" />
+                <div class="hint">A dated subfolder will be created automatically.</div>
+              </div>
+            </div>
+          </details>
+        </section>
+
+        <!-- Status -->
+        <section class="card">
+          <div class="statusbar">
+            <div id="statusTitle" class="status-title">Ready.</div>
+            <div class="status-actions">
+              <button id="clearBtn" class="chip chip-btn" title="Clear previews">Clear</button>
+              <button id="appLogoutBtn" class="chip chip-btn" title="Logout">Logout</button>
+            </div>
+          </div>
+          <div id="status" class="status"></div>
+        </section>
+
+        <!-- Previews -->
+        <section class="card">
+          <div class="section-title">Previews</div>
+          <div id="previewList" class="previewList"></div>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="./src/panel/index.js"></script>
+  </body>
+</html>

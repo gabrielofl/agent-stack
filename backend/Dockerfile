@@ -1,20 +1,33 @@
-FROM mcr.microsoft.com/playwright:v1.58.0-jammy
+FROM budtmo/docker-android:latest
 
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+ENV DEBIAN_FRONTEND=noninteractive
 
-# ✅ Add a virtual display server (Xvfb) + helpers
+# Install necessary tools and dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    wget \
+    unzip \
     xvfb \
-    xauth \
     fluxbox \
-  && rm -rf /var/lib/apt/lists/*
+    xauth \
+    firefox \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+# Download and install Cloudflare Warp
+RUN apt-get update && apt-get install -y curl gnupg
+RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ jammy main" > /etc/apt/sources.list.d/cloudflare-warp.list
+RUN apt-get update && apt-get install -y cloudflare-warp
 
-ENV PORT=3000
-EXPOSE 3000
+# Automate registration (CAUTION: This automatically accepts the TOS)
+RUN warp-cli register --accept-tos
 
-# ✅ Run your app under Xvfb so Chromium has a display
-CMD ["bash","-lc","set -euxo pipefail; which xvfb-run; xvfb-run -a -s \"-screen 0 1280x720x24\" npm run start"]
+RUN warp-cli connect
+
+# Set up display and start fluxbox
+RUN echo "DISPLAY=:99" >> /root/.profile
+RUN start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1280x720x24
+RUN fluxbox &
+
+# Start Firefox
+CMD ["bash", "-c", "warp-cli connect && DISPLAY=:99 firefox"]
